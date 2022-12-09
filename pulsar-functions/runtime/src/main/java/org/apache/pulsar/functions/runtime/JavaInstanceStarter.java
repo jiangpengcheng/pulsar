@@ -66,6 +66,12 @@ public class JavaInstanceStarter implements AutoCloseable {
     public String jarFile;
 
     @Parameter(
+            names = "--function-file",
+            description = "Path to function file\n",
+            listConverter = StringConverter.class)
+    public String functionFile;
+
+    @Parameter(
             names = "--transform_function_jar",
             description = "Path to Transform Function Jar\n",
             listConverter = StringConverter.class)
@@ -231,9 +237,15 @@ public class JavaInstanceStarter implements AutoCloseable {
                         .tlsTrustCertsFilePath(tlsTrustCertFilePath).build(),
                 secretsProvider, collectorRegistry, narExtractionDirectory, rootClassLoader,
                 exposePulsarAdminClientEnabled, webServiceUrl);
+
+        String codeFile = jarFile;
+        if (codeFile.isEmpty()) {
+            codeFile = functionFile;
+        }
+
         runtimeSpawner = new RuntimeSpawner(
                 instanceConfig,
-                jarFile,
+                codeFile,
                 null, // we really dont use this in thread container
                 transformFunctionJarFile,
                 null, // we really dont use this in thread container

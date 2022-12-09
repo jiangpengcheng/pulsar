@@ -23,8 +23,22 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.annotations.VisibleForTesting;
 import com.scurrilous.circe.checksum.Crc32cIntChecksum;
 import io.netty.buffer.ByteBuf;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -33,6 +47,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.jodah.typetools.TypeResolver;
@@ -120,6 +136,11 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     private StateStoreProvider stateStoreProvider;
     private StateManager stateManager;
 
+    private String functionFile;
+
+    private BufferedReader functionOut;
+    private BufferedOutputStream functionIn;
+
     private JavaInstance javaInstance;
     @Getter
     private Throwable deathException;
@@ -158,8 +179,15 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     private final AtomicReference<Schema<?>> sinkSchema = new AtomicReference<>();
     private SinkSchemaInfoProvider sinkSchemaInfoProvider = null;
 
+    private Map<String, String> compilers = new HashMap<>() {{
+        put("python", "pulsar-functions/compilers/python/compiler");
+        put("nodejs", "pulsar-functions/compilers/nodejs/compiler");
+        put("go", "pulsar-functions/compilers/golang/compiler");
+    }};
+
     public JavaInstanceRunnable(InstanceConfig instanceConfig,
                                 ClientBuilder clientBuilder,
+                                String functionFile,
                                 PulsarClient pulsarClient,
                                 PulsarAdmin pulsarAdmin,
                                 String stateStorageImplClass,
@@ -170,6 +198,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                                 ClassLoader transformFunctionClassLoader) throws PulsarClientException {
         this.instanceConfig = instanceConfig;
         this.clientBuilder = clientBuilder;
+        this.functionFile = functionFile;
         this.client = (PulsarClientImpl) pulsarClient;
         this.pulsarAdmin = pulsarAdmin;
         this.stateStorageImplClass = stateStorageImplClass;
@@ -177,8 +206,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         this.secretsProvider = secretsProvider;
         this.componentClassLoader = componentClassLoader;
         this.functionClassLoader = transformFunctionClassLoader != null
-            ? transformFunctionClassLoader
-            : componentClassLoader;
+                ? transformFunctionClassLoader
+                : componentClassLoader;
         this.metricsLabels = new String[]{
                 instanceConfig.getFunctionDetails().getTenant(),
                 String.format("%s/%s", instanceConfig.getFunctionDetails().getTenant(),
@@ -217,35 +246,132 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 this.instanceCache.getScheduledExecutorService(),
                 this.componentType);
 
-        // initialize the thread context
-        ThreadContext.put("function", FunctionCommon.getFullyQualifiedName(instanceConfig.getFunctionDetails()));
-        ThreadContext.put("functionname", instanceConfig.getFunctionDetails().getName());
-        ThreadContext.put("instance", instanceConfig.getInstanceName());
-
-        log.info("Starting Java Instance {} : \n Details = {}",
-            instanceConfig.getFunctionDetails().getName(), instanceConfig.getFunctionDetails());
-
-        Object object;
-        if (instanceConfig.getFunctionDetails().getClassName()
-                .equals(org.apache.pulsar.functions.windowing.WindowFunctionExecutor.class.getName())) {
-            object = Reflections.createInstance(
-                    instanceConfig.getFunctionDetails().getClassName(),
-                    instanceClassLoader);
-        } else {
-            object = Reflections.createInstance(
-                    instanceConfig.getFunctionDetails().getClassName(),
-                    functionClassLoader);
-        }
-
-
-        if (!(object instanceof Function) && !(object instanceof java.util.function.Function)) {
-            throw new RuntimeException("User class must either be Function or java.util.Function");
-        }
-
         // start the state table
         setupStateStore();
 
         ContextImpl contextImpl = setupContext();
+        // use original way for java
+        if (instanceConfig.getFunctionDetails().getRuntime()
+                == org.apache.pulsar.functions.proto.Function.FunctionDetails.Runtime.JAVA) {
+            // initialize the thread context
+            ThreadContext.put("function", FunctionCommon.getFullyQualifiedName(instanceConfig.getFunctionDetails()));
+            ThreadContext.put("functionname", instanceConfig.getFunctionDetails().getName());
+            ThreadContext.put("instance", instanceConfig.getInstanceName());
+            log.info("Starting Java Instance {} : \n Details = {}",
+                    instanceConfig.getFunctionDetails().getName(), instanceConfig.getFunctionDetails());
+            Object object;
+            if (instanceConfig.getFunctionDetails().getClassName()
+                    .equals(org.apache.pulsar.functions.windowing.WindowFunctionExecutor.class.getName())) {
+                object = Reflections.createInstance(
+                        instanceConfig.getFunctionDetails().getClassName(),
+                        instanceClassLoader);
+            } else {
+                object = Reflections.createInstance(
+                        instanceConfig.getFunctionDetails().getClassName(),
+                        functionClassLoader);
+            }
+
+            if (!(object instanceof Function) && !(object instanceof java.util.function.Function)) {
+                throw new RuntimeException("User class must either be Function or java.util.Function");
+            }
+
+            if (!(object instanceof IdentityFunction) && !(sink instanceof PulsarSink)) {
+                sinkSchemaInfoProvider = new SinkSchemaInfoProvider();
+            }
+
+            javaInstance = new JavaInstance(contextImpl, object, instanceConfig);
+            try {
+                Thread.currentThread().setContextClassLoader(functionClassLoader);
+                javaInstance.initialize();
+            } finally {
+                Thread.currentThread().setContextClassLoader(instanceClassLoader);
+            }
+        } else if (functionFile != "") {
+            File destFile = new File("action-src");
+            if (!destFile.exists()) {
+                destFile.mkdirs();
+            }
+            if (functionFile.endsWith(".zip")) {
+                ZipFile zipFile = new ZipFile(functionFile);
+                for (Enumeration entries = zipFile.entries(); entries.hasMoreElements(); ) {
+                    ZipEntry entry = (ZipEntry) entries.nextElement();
+                    InputStream in = zipFile.getInputStream(entry);
+                    String curEntryName = entry.getName();
+                    int endIndex = curEntryName.lastIndexOf('/');
+                    String outPath = ("action-src/" + curEntryName).replaceAll("\\*", "/");
+                    if (endIndex != -1) {
+                        File file = new File(outPath.substring(0, outPath.lastIndexOf("/")));
+                        if (!file.exists()) {
+                            file.mkdirs();
+                        }
+                    }
+
+                    File outFile = new File(outPath);
+                    if (outFile.isDirectory()) {
+                        continue;
+                    }
+                    OutputStream out = new FileOutputStream(outPath);
+                    byte[] buf1 = new byte[1024];
+                    int len;
+                    while ((len = in.read(buf1)) > 0) {
+                        out.write(buf1, 0, len);
+                    }
+                    in.close();
+                    out.close();
+                }
+            } else {
+                Path srcFile = Paths.get(functionFile);
+                Path dst = Paths.get("action-src/");
+                Files.move(srcFile, dst.resolve(srcFile.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            String compiler = compilers.get(instanceConfig.getFunctionDetails().getRuntime().name().toLowerCase());
+            if (compiler == null) {
+                throw new RuntimeException("Unsupported runtime: " + instanceConfig.getFunctionDetails().getRuntime());
+            }
+            String[] cmd = new String[] {
+                    compiler,
+                    instanceConfig.getFunctionDetails().getClassName(),
+                    "action-src/",
+                    "action-bin/"
+            };
+            Process compileProcess = Runtime.getRuntime().exec(cmd);
+            BufferedInputStream bis = new BufferedInputStream(
+                    compileProcess.getInputStream());
+            BufferedReader br = new BufferedReader(new InputStreamReader(bis));
+            compileProcess.getErrorStream().transferTo(System.err);
+            String line;
+            while ((line = br.readLine()) != null) {
+                System.out.println(line);
+            }
+            if (compileProcess.waitFor() != 0) {
+                throw new RuntimeException("Unable to compile : " + instanceConfig.getFunctionDetails().getRuntime());
+            }
+            bis.close();
+            br.close();
+
+            // start executor
+            String[] execCommand  = new String[] {
+                    "action-bin/exec",
+            };
+            Process execProcess = Runtime.getRuntime().exec(execCommand);
+            execProcess.onExit().thenAccept(p -> {
+                try {
+                    p.getErrorStream().transferTo(System.err);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+                throw new RuntimeException("Process exited with code: " + p.exitValue());
+            });
+            if (execProcess.isAlive()) {
+                log.info("Process is alive with pid: " + execProcess.pid());
+                functionOut = new BufferedReader(
+                        new InputStreamReader(new BufferedInputStream(execProcess.getInputStream())));
+                functionIn = new BufferedOutputStream(execProcess.getOutputStream());
+            } else {
+                throw new RuntimeException("Unable to start process");
+            }
+        }
 
         // start the output producer
         setupOutput(contextImpl);
@@ -254,17 +380,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         // start any log topic handler
         setupLogHandler();
 
-        if (!(object instanceof IdentityFunction) && !(sink instanceof PulsarSink)) {
-            sinkSchemaInfoProvider = new SinkSchemaInfoProvider();
-        }
-
-        javaInstance = new JavaInstance(contextImpl, object, instanceConfig);
-        try {
-            Thread.currentThread().setContextClassLoader(functionClassLoader);
-            javaInstance.initialize();
-        } finally {
-            Thread.currentThread().setContextClassLoader(instanceClassLoader);
-        }
         // to signal member variables are initialized
         isInitialized = true;
     }
@@ -306,7 +421,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                     }
                 }
 
-                JavaExecutionResult result;
+                JavaExecutionResult result = null;
 
                 // set last invocation time
                 stats.setLastInvocation(System.currentTimeMillis());
@@ -316,11 +431,20 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
 
                 // process the message
                 Thread.currentThread().setContextClassLoader(functionClassLoader);
-                result = javaInstance.handleMessage(
-                        currentRecord,
-                        currentRecord.getValue(),
-                        asyncResultConsumer,
-                        asyncErrorHandler);
+                if (javaInstance != null) {
+                    result = javaInstance.handleMessage(
+                            currentRecord,
+                            currentRecord.getValue(),
+                            asyncResultConsumer,
+                            asyncErrorHandler);
+                } else {
+                    functionIn.write(((String) currentRecord.getValue()).getBytes(StandardCharsets.UTF_8));
+                    functionIn.write("\n".getBytes(StandardCharsets.UTF_8));
+                    functionIn.flush();
+                    JavaExecutionResult executionResult = new JavaExecutionResult();
+                    executionResult.setResult(functionOut.readLine());
+                    result = executionResult;
+                }
                 Thread.currentThread().setContextClassLoader(instanceClassLoader);
 
                 // register end time
@@ -359,9 +483,9 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             stateStoreProvider.init(stateStoreProviderConfig, instanceConfig.getFunctionDetails());
 
             StateStore store = stateStoreProvider.getStateStore(
-                instanceConfig.getFunctionDetails().getTenant(),
-                instanceConfig.getFunctionDetails().getNamespace(),
-                instanceConfig.getFunctionDetails().getName()
+                    instanceConfig.getFunctionDetails().getTenant(),
+                    instanceConfig.getFunctionDetails().getNamespace(),
+                    instanceConfig.getFunctionDetails().getName()
             );
             StateStoreContext context = new StateStoreContextImpl();
             store.init(context);
@@ -471,7 +595,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         if (isKeyValueSeparated && schema instanceof KeyValueSchema) {
             KeyValueSchema<?, ?> kvSchema = (KeyValueSchema<?, ?>) schema;
             finalSchema = KeyValueSchemaImpl.of(kvSchema.getKeySchema(), kvSchema.getValueSchema(),
-                KeyValueEncodingType.SEPARATED);
+                    KeyValueEncodingType.SEPARATED);
         } else {
             finalSchema = schema;
         }
@@ -506,7 +630,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
 
     /**
      * NOTE: this method is be synchronized because it is potentially called by two different places
-     *       one inside the run/finally clause and one inside the ThreadRuntime::stop.
+     * one inside the run/finally clause and one inside the ThreadRuntime::stop.
      */
     @Override
     public synchronized void close() {
@@ -634,8 +758,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     }
 
     private void internalResetMetrics() {
-            stats.reset();
-            javaInstance.resetMetrics();
+        stats.reset();
+        javaInstance.resetMetrics();
     }
 
     private Builder createMetricsDataBuilder() {
@@ -825,12 +949,12 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             // check if source is a batch source
             if (sourceSpec.getClassName().equals(BatchSourceExecutor.class.getName())) {
                 object = Reflections.createInstance(
-                  sourceSpec.getClassName(),
-                  this.instanceClassLoader);
+                        sourceSpec.getClassName(),
+                        this.instanceClassLoader);
             } else {
                 object = Reflections.createInstance(
-                  sourceSpec.getClassName(),
-                  this.componentClassLoader);
+                        sourceSpec.getClassName(),
+                        this.componentClassLoader);
             }
         }
 
@@ -963,7 +1087,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
 
             case AVRO:
                 return AvroSchema.of(SchemaDefinition.<T>builder()
-                    .withPojo(clazz).build());
+                        .withPojo(clazz).build());
 
             case JSON:
                 return JSONSchema.of(SchemaDefinition.<T>builder().withPojo(clazz).build());
@@ -989,8 +1113,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         if (GenericObject.class.isAssignableFrom(clazz)) {
             return SchemaType.AUTO_CONSUME;
         } else if (byte[].class.equals(clazz)
-            || ByteBuf.class.equals(clazz)
-            || ByteBuffer.class.equals(clazz)) {
+                || ByteBuf.class.equals(clazz)
+                || ByteBuffer.class.equals(clazz)) {
             // if sink uses bytes, we should ignore
             return SchemaType.NONE;
         } else {
@@ -1009,8 +1133,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
 
     private static SchemaType getDefaultSchemaType(Class<?> clazz) {
         if (byte[].class.equals(clazz)
-            || ByteBuf.class.equals(clazz)
-            || ByteBuffer.class.equals(clazz)) {
+                || ByteBuf.class.equals(clazz)
+                || ByteBuffer.class.equals(clazz)) {
             return SchemaType.NONE;
         } else if (GenericObject.class.isAssignableFrom(clazz)) {
             // the sink is taking generic record/object, so we do auto schema detection

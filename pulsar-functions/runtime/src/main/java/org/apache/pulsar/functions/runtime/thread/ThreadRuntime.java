@@ -63,6 +63,7 @@ public class ThreadRuntime implements Runtime {
     private final ThreadGroup threadGroup;
     private final FunctionCacheManager fnCache;
     private final String jarFile;
+    private final String functionFile;
     private final String transformFunctionFile;
     private final ClientBuilder clientBuilder;
     private final PulsarClient pulsarClient;
@@ -98,6 +99,7 @@ public class ThreadRuntime implements Runtime {
         this.threadGroup = threadGroup;
         this.fnCache = fnCache;
         this.jarFile = jarFile;
+        this.functionFile = jarFile;
         this.transformFunctionFile = transformFunctionFile;
         this.clientBuilder = clientBuilder;
         this.pulsarClient = client;
@@ -206,6 +208,7 @@ public class ThreadRuntime implements Runtime {
         this.javaInstanceRunnable = new JavaInstanceRunnable(
                 instanceConfig,
                 clientBuilder,
+                functionFile,
                 pulsarClient,
                 pulsarAdmin,
                 stateStorageImplClass,
