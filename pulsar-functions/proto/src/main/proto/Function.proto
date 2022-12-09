@@ -56,6 +56,7 @@ message FunctionDetails {
         JAVA = 0;
         PYTHON = 1;
         GO = 3;
+        NODEJS = 4;
     }
     enum ComponentType {
         UNKNOWN = 0;
