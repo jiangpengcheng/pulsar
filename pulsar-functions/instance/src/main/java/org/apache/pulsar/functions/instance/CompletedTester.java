@@ -25,13 +25,13 @@ import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.functions.proto.Function;
 
-public class Tester {
+public class CompletedTester {
     @SuppressWarnings({"checkstyle:RegexpSingleline", "checkstyle:LineLength"})
     public static void main(String[] args) throws PulsarClientException {
         InstanceConfig instanceConfig = new InstanceConfig();
         instanceConfig.setInstanceId(0);
         instanceConfig.setClusterName("standalone");
-        instanceConfig.setFunctionId("test-avro0-completed");
+        instanceConfig.setFunctionId("test-string-completed");
         instanceConfig.setTransformFunctionId("trans-0");
         instanceConfig.setFunctionVersion("0.0.1");
 
@@ -42,25 +42,25 @@ public class Tester {
         Function.FunctionDetails.Builder functionDetailsBuilder = Function.FunctionDetails.newBuilder();
 
         Function.SourceSpec.Builder sourceSpecBuilder = Function.SourceSpec.newBuilder();
-        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-py-package-avro0-completed-source", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).setSchemaType("avro").build());
+        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-py-package-string-completed-source", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).build());
         sourceSpecBuilder.setSubscriptionType(Function.SubscriptionType.SHARED);
-        sourceSpecBuilder.setSubscriptionName("test-avro2-sub");
+        sourceSpecBuilder.setSubscriptionName("test-string-sub");
         sourceSpecBuilder.setSubscriptionPosition(Function.SubscriptionPosition.LATEST);
-        sourceSpecBuilder.setTypeClassName("schema.Student");
+        sourceSpecBuilder.setTypeClassName("string");
         functionDetailsBuilder.setSource(sourceSpecBuilder.build());
 
         Function.SinkSpec.Builder sinkSpecBuilder = Function.SinkSpec.newBuilder();
-        sinkSpecBuilder.setTopic("persistent://public/default/test-py-package-avro0-completed-sink");
-        sinkSpecBuilder.setSchemaType("avro");
-        sinkSpecBuilder.setTypeClassName("schema.Person");
+        sinkSpecBuilder.setTopic("persistent://public/default/test-py-package-string-completed-sink");
+        sinkSpecBuilder.setTypeClassName("string");
         functionDetailsBuilder.setSink(sinkSpecBuilder.build());
 
         functionDetailsBuilder.setTenant("public");
         functionDetailsBuilder.setNamespace("default");
         functionDetailsBuilder.setName("test-py-package");
+        functionDetailsBuilder.setLogTopic("persistent://public/default/test-py-package-string-completed-logs");
 
         functionDetailsBuilder.setRuntime(Function.FunctionDetails.Runtime.PYTHON);
-        functionDetailsBuilder.setClassName("student");
+        functionDetailsBuilder.setClassName("test.ExclamationFunction");
 
         functionDetailsBuilder.setComponentType(Function.FunctionDetails.ComponentType.FUNCTION);
         instanceConfig.setFunctionDetails(functionDetailsBuilder.build());
@@ -74,7 +74,7 @@ public class Tester {
         JavaInstanceRunnable javaInstanceRunnable = new JavaInstanceRunnable(
                 instanceConfig,
                 clientBuilder,
-                "stu.zip",
+                "test.py",
                 pulsarClient,
                 null,
                 null, null, null, null, Thread.currentThread().getContextClassLoader(), null);

@@ -21,27 +21,36 @@ package org.apache.pulsar.functions.instance;
 
 import static org.apache.pulsar.functions.utils.FunctionCommon.convertFromFunctionDetailsSubscriptionPosition;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.google.common.base.Preconditions;
-
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Empty;
+import com.google.protobuf.util.JsonFormat;
 import com.scurrilous.circe.checksum.Crc32cIntChecksum;
-import java.io.IOException;
-import io.netty.buffer.ByteBuf;
+import io.grpc.Server;
+import io.grpc.netty.NettyServerBuilder;
+import io.grpc.stub.StreamObserver;
+import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.channel.epoll.EpollServerDomainSocketChannel;
+import io.netty.channel.kqueue.KQueueEventLoopGroup;
+import io.netty.channel.kqueue.KQueueServerDomainSocketChannel;
+import io.netty.channel.unix.DomainSocketAddress;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.util.Enumeration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
@@ -49,10 +58,11 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.jodah.typetools.TypeResolver;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.ThreadContext;
 import org.apache.logging.log4j.core.LoggerContext;
@@ -60,6 +70,7 @@ import org.apache.logging.log4j.core.config.Configuration;
 import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.api.ClientBuilder;
+import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.impl.PulsarClientImpl;
@@ -70,6 +81,7 @@ import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.common.util.Reflections;
 import org.apache.pulsar.functions.api.Function;
 import org.apache.pulsar.functions.api.Record;
+import org.apache.pulsar.functions.api.RecordMetadata;
 import org.apache.pulsar.functions.api.StateStore;
 import org.apache.pulsar.functions.api.StateStoreContext;
 import org.apache.pulsar.functions.instance.state.BKStateStoreProviderImpl;
@@ -79,16 +91,18 @@ import org.apache.pulsar.functions.instance.state.StateStoreContextImpl;
 import org.apache.pulsar.functions.instance.state.StateStoreProvider;
 import org.apache.pulsar.functions.instance.stats.ComponentStatsManager;
 import org.apache.pulsar.functions.instance.stats.FunctionCollectorRegistry;
+import org.apache.pulsar.functions.proto.ContextGrpc;
 import org.apache.pulsar.functions.proto.Function.SinkSpec;
 import org.apache.pulsar.functions.proto.Function.SourceSpec;
 import org.apache.pulsar.functions.proto.InstanceCommunication;
 import org.apache.pulsar.functions.proto.InstanceCommunication.MetricsData.Builder;
+import org.apache.pulsar.functions.proto.InstanceContext;
 import org.apache.pulsar.functions.secretsprovider.SecretsProvider;
 import org.apache.pulsar.functions.sink.PulsarSink;
 import org.apache.pulsar.functions.sink.PulsarSinkConfig;
 import org.apache.pulsar.functions.sink.PulsarSinkDisable;
-import org.apache.pulsar.functions.source.MultiConsumerPulsarSourceConfig;
 import org.apache.pulsar.functions.source.MultiConsumerPulsarSource;
+import org.apache.pulsar.functions.source.MultiConsumerPulsarSourceConfig;
 import org.apache.pulsar.functions.source.PulsarSource;
 import org.apache.pulsar.functions.source.PulsarSourceConfig;
 import org.apache.pulsar.functions.source.SingleConsumerPulsarSource;
@@ -106,8 +120,13 @@ import org.slf4j.LoggerFactory;
  */
 @Slf4j
 public class JavaInstanceRunnable implements AutoCloseable, Runnable {
+    private static final String srcRoot = "action-src";
+    private static final String binRoot = "action-bin";
+    private static final String errorHeader = "error:";
 
     private final InstanceConfig instanceConfig;
+    private final String srcDir;
+    private final String binDir;
 
     // input topic consumer & output topic producer
     private final ClientBuilder clientBuilder;
@@ -123,6 +142,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     private StateManager stateManager;
 
     private String functionFile;
+    private Server grpcServer;
 
     private BufferedReader functionOut;
     private BufferedOutputStream functionIn;
@@ -177,6 +197,10 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                                 FunctionCollectorRegistry collectorRegistry,
                                 ClassLoader functionClassLoader) throws PulsarClientException {
         this.instanceConfig = instanceConfig;
+        this.srcDir = String.format("%s/%s/%s", srcRoot, instanceConfig.getFunctionId(),
+                instanceConfig.getFunctionVersion());
+        this.binDir = String.format("%s/%s/%s", binRoot, instanceConfig.getFunctionId(),
+                instanceConfig.getFunctionVersion());
         this.clientBuilder = clientBuilder;
         this.functionFile = functionFile;
         this.client = (PulsarClientImpl) pulsarClient;
@@ -227,6 +251,10 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         setupStateStore();
 
         ContextImpl contextImpl = setupContext();
+        // start the output producer
+        setupOutput(contextImpl);
+        // start the input consumer
+        setupInput(contextImpl);
         // use original way for java
         if (instanceConfig.getFunctionDetails().getRuntime()
                 == org.apache.pulsar.functions.proto.Function.FunctionDetails.Runtime.JAVA) {
@@ -259,42 +287,22 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             } finally {
                 Thread.currentThread().setContextClassLoader(instanceClassLoader);
             }
-        } else if (functionFile != "") {
-            File destFile = new File("action-src");
-            if (!destFile.exists()) {
-                destFile.mkdirs();
+            // start any log topic handler
+            setupLogHandler();
+        } else if (StringUtils.isNotEmpty(functionFile)) {
+            File destFile = new File(srcDir);
+            // recreate src file
+            if (destFile.exists()) {
+                FileUtils.deleteDirectory(destFile);
+            }
+            if (!destFile.mkdirs()) {
+                throw new RuntimeException("Failed to create dirs: " + destFile.getPath());
             }
             if (functionFile.endsWith(".zip")) {
-                ZipFile zipFile = new ZipFile(functionFile);
-                for (Enumeration entries = zipFile.entries(); entries.hasMoreElements(); ) {
-                    ZipEntry entry = (ZipEntry) entries.nextElement();
-                    InputStream in = zipFile.getInputStream(entry);
-                    String curEntryName = entry.getName();
-                    int endIndex = curEntryName.lastIndexOf('/');
-                    String outPath = ("action-src/" + curEntryName).replaceAll("\\*", "/");
-                    if (endIndex != -1) {
-                        File file = new File(outPath.substring(0, outPath.lastIndexOf("/")));
-                        if (!file.exists()) {
-                            file.mkdirs();
-                        }
-                    }
-
-                    File outFile = new File(outPath);
-                    if (outFile.isDirectory()) {
-                        continue;
-                    }
-                    OutputStream out = new FileOutputStream(outPath);
-                    byte[] buf1 = new byte[1024];
-                    int len;
-                    while ((len = in.read(buf1)) > 0) {
-                        out.write(buf1, 0, len);
-                    }
-                    in.close();
-                    out.close();
-                }
+                unzip(functionFile, destFile);
             } else {
                 Path srcFile = Paths.get(functionFile);
-                Path dst = Paths.get("action-src/");
+                Path dst = Paths.get(destFile.getPath());
                 Files.move(srcFile, dst.resolve(srcFile.getFileName()), StandardCopyOption.REPLACE_EXISTING);
             }
 
@@ -302,16 +310,16 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             if (compiler == null) {
                 throw new RuntimeException("Unsupported runtime: " + instanceConfig.getFunctionDetails().getRuntime());
             }
-            String[] cmd = new String[] {
+            String[] cmd = new String[]{
                     compiler,
                     instanceConfig.getFunctionDetails().getClassName(),
-                    "action-src/",
-                    "action-bin/"
+                    srcDir,
+                    binDir
             };
             Process compileProcess = Runtime.getRuntime().exec(cmd);
             BufferedInputStream bis = new BufferedInputStream(
                     compileProcess.getInputStream());
-            BufferedReader br = new BufferedReader(new InputStreamReader(bis));
+            BufferedReader br = new BufferedReader(new InputStreamReader(bis, StandardCharsets.UTF_8));
             compileProcess.getErrorStream().transferTo(System.err);
             String line;
             while ((line = br.readLine()) != null) {
@@ -322,36 +330,91 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             }
             bis.close();
             br.close();
+            try {
+                EpollEventLoopGroup group = new EpollEventLoopGroup();
+                grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
+                        .channelType(EpollServerDomainSocketChannel.class)
+                        .workerEventLoopGroup(group)
+                        .bossEventLoopGroup(group)
+                        .addService(new ContextGrpcImpl(contextImpl))
+                        .build()
+                        .start();
+            } catch (Exception e) {
+                KQueueEventLoopGroup group = new KQueueEventLoopGroup();
+                grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
+                        .channelType(KQueueServerDomainSocketChannel.class)
+                        .workerEventLoopGroup(group)
+                        .bossEventLoopGroup(group)
+                        .addService(new ContextGrpcImpl(contextImpl))
+                        .build()
+                        .start();
+            }
 
             // start executor
-            String[] execCommand  = new String[] {
-                    "action-bin/exec",
+            String[] execCommand = new String[]{
+                    binDir + "/exec",
+                    "--tenant",
+                    instanceConfig.getFunctionDetails().getTenant(),
+                    "--namespace",
+                    instanceConfig.getFunctionDetails().getNamespace(),
+                    "--name",
+                    instanceConfig.getFunctionDetails().getName(),
+                    "--source",
+                    JsonFormat.printer().print(instanceConfig.getFunctionDetails().getSource()),
+                    "--sink",
+                    JsonFormat.printer().print(instanceConfig.getFunctionDetails().getSink()),
+                    "--instance_id",
+                    String.valueOf(instanceConfig.getInstanceId()),
+                    "--function_id",
+                    instanceConfig.getFunctionId(),
+                    "--function_version",
+                    instanceConfig.getFunctionVersion(),
             };
-            Process execProcess = Runtime.getRuntime().exec(execCommand);
+            ArrayList<String> list = new ArrayList(Arrays.asList(execCommand));
+            if (StringUtils.isNotEmpty(instanceConfig.getFunctionDetails().getUserConfig())) {
+                list.add("--user_config");
+                list.add(instanceConfig.getFunctionDetails().getUserConfig());
+            }
+            if (StringUtils.isNotEmpty(instanceConfig.getFunctionDetails().getSecretsMap())) {
+                list.add("--secrets_map");
+                list.add(instanceConfig.getFunctionDetails().getSecretsMap());
+            }
+            if (StringUtils.isNotEmpty(instanceConfig.getFunctionDetails().getSecretsProvider())) {
+                list.add("--secrets_provider");
+                list.add(instanceConfig.getFunctionDetails().getSecretsProvider());
+            }
+            if (StringUtils.isNotEmpty(instanceConfig.getFunctionDetails().getSecretsConfig())) {
+                list.add("--secrets_provider_config");
+                list.add(instanceConfig.getFunctionDetails().getSecretsConfig());
+            }
+            if (StringUtils.isNotEmpty(stateStorageServiceUrl)) {
+                list.add("--state_storage_serviceurl");
+                list.add(stateStorageServiceUrl);
+            }
+            if (StringUtils.isNotEmpty(instanceConfig.getFunctionDetails().getLogTopic())) {
+                list.add("--log_topic");
+                list.add(instanceConfig.getFunctionDetails().getLogTopic());
+            }
+            String[] commands = new String[list.size()];
+            Process execProcess = Runtime.getRuntime().exec(list.toArray(commands));
             execProcess.onExit().thenAccept(p -> {
                 try {
                     p.getErrorStream().transferTo(System.err);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
-                throw new RuntimeException("Process exited with code: " + p.exitValue());
+                this.close();
             });
             if (execProcess.isAlive()) {
                 log.info("Process is alive with pid: " + execProcess.pid());
                 functionOut = new BufferedReader(
-                        new InputStreamReader(new BufferedInputStream(execProcess.getInputStream())));
+                        new InputStreamReader(new BufferedInputStream(execProcess.getInputStream()),
+                                StandardCharsets.UTF_8));
                 functionIn = new BufferedOutputStream(execProcess.getOutputStream());
             } else {
                 throw new RuntimeException("Unable to start process");
             }
         }
-
-        // start the output producer
-        setupOutput(contextImpl);
-        // start the input consumer
-        setupInput(contextImpl);
-        // start any log topic handler
-        setupLogHandler();
 
         // to signal member variables are initialized
         isInitialized = true;
@@ -380,6 +443,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             Thread currentThread = Thread.currentThread();
             Consumer<Throwable> asyncErrorHandler = throwable -> currentThread.interrupt();
             AsyncResultConsumer asyncResultConsumer = (record, javaExecutionResult) -> handleResult(record, javaExecutionResult);
+            ObjectMapper mapper = ObjectMapperFactory.getThreadLocal();
+            mapper.registerModule(new Jdk8Module());
 
             while (true) {
                 currentRecord = readInput();
@@ -403,23 +468,46 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 stats.processTimeStart();
 
                 // process the message
-                Thread.currentThread().setContextClassLoader(functionClassLoader);
                 if (javaInstance != null) {
                     addLogTopicHandler();
+                    Thread.currentThread().setContextClassLoader(functionClassLoader);
                     result = javaInstance.handleMessage(
                             currentRecord,
                             currentRecord.getValue(),
                             asyncResultConsumer,
                             asyncErrorHandler);
+                    Thread.currentThread().setContextClassLoader(instanceClassLoader);
                 } else {
-                    functionIn.write(((String) currentRecord.getValue()).getBytes(StandardCharsets.UTF_8));
-                    functionIn.write("\n".getBytes(StandardCharsets.UTF_8));
-                    functionIn.flush();
+                    currentRecord.getMessage().map(msg -> {
+                        try {
+                            RecordMetadata metadata = new RecordMetadata(currentRecord.getTopicName(),
+                                    currentRecord.getKey(),
+                                    currentRecord.getEventTime(),
+                                    currentRecord.getPartitionId(),
+                                    currentRecord.getPartitionIndex(),
+                                    currentRecord.getRecordSequence(),
+                                    currentRecord.getProperties(),
+                                    msg.getMessageId(),
+                                    byteArrayToHexString(msg.getData()));
+                            // write the topic name too
+                            functionIn.write(mapper.writeValueAsString(metadata).getBytes(StandardCharsets.UTF_8));
+                            functionIn.write("\n".getBytes(StandardCharsets.UTF_8));
+                            functionIn.flush();
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
+                        }
+                        return null;
+                    });
                     JavaExecutionResult executionResult = new JavaExecutionResult();
-                    executionResult.setResult(functionOut.readLine());
-                    result = executionResult;
+                    String output = functionOut.readLine();
+                    if (output.startsWith(errorHeader)) {
+                        log.error("Failed to process message: {}, error: {}", currentRecord.getRecordSequence(),
+                                output.replaceFirst(errorHeader, ""));
+                    } else {
+                        executionResult.setResult(hexStringToByteArray(output));
+                        result = executionResult;
+                    }
                 }
-                Thread.currentThread().setContextClassLoader(instanceClassLoader);
 
                 // register end time
                 stats.processTimeEnd();
@@ -610,6 +698,26 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             logAppender.stop();
             logAppender = null;
         }
+
+        if (grpcServer != null) {
+            grpcServer.shutdown();
+        }
+
+        if (functionOut != null) {
+            try {
+                functionOut.close();
+            } catch (IOException e) {
+                log.error("Failed to close function output stream", e);
+            }
+        }
+
+        if (functionIn != null) {
+            try {
+                functionIn.close();
+            } catch (IOException e) {
+                log.error("Failed to close function input stream", e);
+            }
+        }
     }
 
     public String getStatsAsString() throws IOException {
@@ -663,6 +771,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
 
     private InstanceCommunication.MetricsData internalGetMetrics() {
         InstanceCommunication.MetricsData.Builder bldr = createMetricsDataBuilder();
+
         Map<String, Double> userMetrics = javaInstance.getMetrics();
         if (userMetrics != null) {
             bldr.putAllUserMetrics(userMetrics);
@@ -776,13 +885,18 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         if (sourceSpec.getClassName().isEmpty()) {
             Map<String, ConsumerConfig> topicSchema = new TreeMap<>();
             sourceSpec.getInputSpecsMap().forEach((topic, conf) -> {
-                ConsumerConfig consumerConfig = ConsumerConfig.builder().isRegexPattern(conf.getIsRegexPattern()).build();
-                if (conf.getSchemaType() != null && !conf.getSchemaType().isEmpty()) {
-                    consumerConfig.setSchemaType(conf.getSchemaType());
-                } else if (conf.getSerdeClassName() != null && !conf.getSerdeClassName().isEmpty()) {
-                    consumerConfig.setSerdeClassName(conf.getSerdeClassName());
+                ConsumerConfig consumerConfig =
+                        ConsumerConfig.builder().isRegexPattern(conf.getIsRegexPattern()).build();
+
+                if (instanceConfig.getFunctionDetails().getRuntime()
+                        == org.apache.pulsar.functions.proto.Function.FunctionDetails.Runtime.JAVA) {
+                    if (conf.getSchemaType() != null && !conf.getSchemaType().isEmpty()) {
+                        consumerConfig.setSchemaType(conf.getSchemaType());
+                    } else if (conf.getSerdeClassName() != null && !conf.getSerdeClassName().isEmpty()) {
+                        consumerConfig.setSerdeClassName(conf.getSerdeClassName());
+                    }
+                    consumerConfig.setSchemaProperties(conf.getSchemaPropertiesMap());
                 }
-                consumerConfig.setSchemaProperties(conf.getSchemaPropertiesMap());
                 consumerConfig.setConsumerProperties(conf.getConsumerPropertiesMap());
                 if (conf.hasReceiverQueueSize()) {
                     consumerConfig.setReceiverQueueSize(conf.getReceiverQueueSize().getValue());
@@ -796,9 +910,14 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             });
 
             sourceSpec.getTopicsToSerDeClassNameMap().forEach((topic, serde) -> {
+                String finalSerde = serde;
+                if (instanceConfig.getFunctionDetails().getRuntime()
+                        != org.apache.pulsar.functions.proto.Function.FunctionDetails.Runtime.JAVA) {
+                    finalSerde = byte[].class.getName();
+                }
                 topicSchema.put(topic,
                         ConsumerConfig.builder()
-                                .serdeClassName(serde)
+                                .serdeClassName(finalSerde)
                                 .isRegexPattern(false)
                                 .build());
             });
@@ -835,7 +954,12 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             Preconditions.checkNotNull(contextImpl.getSubscriptionType());
             pulsarSourceConfig.setSubscriptionType(contextImpl.getSubscriptionType());
 
-            pulsarSourceConfig.setTypeClassName(sourceSpec.getTypeClassName());
+            if (instanceConfig.getFunctionDetails().getRuntime()
+                    == org.apache.pulsar.functions.proto.Function.FunctionDetails.Runtime.JAVA) {
+                pulsarSourceConfig.setTypeClassName(sourceSpec.getTypeClassName());
+            } else {
+                pulsarSourceConfig.setTypeClassName(byte[].class.getName());
+            }
 
             if (sourceSpec.getTimeoutMs() > 0 ) {
                 pulsarSourceConfig.setTimeoutMs(sourceSpec.getTimeoutMs());
@@ -916,14 +1040,20 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 pulsarSinkConfig.setForwardSourceMessageProperty(
                         this.instanceConfig.getFunctionDetails().getSink().getForwardSourceMessageProperty());
 
-                if (!StringUtils.isEmpty(sinkSpec.getSchemaType())) {
-                    pulsarSinkConfig.setSchemaType(sinkSpec.getSchemaType());
-                } else if (!StringUtils.isEmpty(sinkSpec.getSerDeClassName())) {
-                    pulsarSinkConfig.setSerdeClassName(sinkSpec.getSerDeClassName());
-                }
+                // no schema and serde for other runtime(default to bytes)
+                if (instanceConfig.getFunctionDetails().getRuntime()
+                        == org.apache.pulsar.functions.proto.Function.FunctionDetails.Runtime.JAVA) {
+                    if (!StringUtils.isEmpty(sinkSpec.getSchemaType())) {
+                        pulsarSinkConfig.setSchemaType(sinkSpec.getSchemaType());
+                    } else if (!StringUtils.isEmpty(sinkSpec.getSerDeClassName())) {
+                        pulsarSinkConfig.setSerdeClassName(sinkSpec.getSerDeClassName());
+                    }
 
-                pulsarSinkConfig.setTypeClassName(sinkSpec.getTypeClassName());
-                pulsarSinkConfig.setSchemaProperties(sinkSpec.getSchemaPropertiesMap());
+                    pulsarSinkConfig.setTypeClassName(sinkSpec.getTypeClassName());
+                    pulsarSinkConfig.setSchemaProperties(sinkSpec.getSchemaPropertiesMap());
+                } else {
+                    pulsarSinkConfig.setTypeClassName(byte[].class.getName());
+                }
 
                 if (this.instanceConfig.getFunctionDetails().getSink().getProducerSpec() != null) {
                     org.apache.pulsar.functions.proto.Function.ProducerSpec conf = this.instanceConfig.getFunctionDetails().getSink().getProducerSpec();
@@ -972,6 +1102,181 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             throw e;
         } finally {
             Thread.currentThread().setContextClassLoader(this.instanceClassLoader);
+        }
+    }
+
+    private String byteToHex(byte num) {
+        char[] hexDigits = new char[2];
+        hexDigits[0] = Character.forDigit((num >> 4) & 0xF, 16);
+        hexDigits[1] = Character.forDigit((num & 0xF), 16);
+        return new String(hexDigits);
+    }
+
+    private String byteArrayToHexString(byte[] byteArray) {
+        StringBuilder hexStringBuffer = new StringBuilder();
+        for (int i = 0; i < byteArray.length; i++) {
+            hexStringBuffer.append(byteToHex(byteArray[i]));
+        }
+        return hexStringBuffer.toString();
+    }
+
+    private byte[] hexStringToByteArray(String s) {
+        int len = s.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
+                    + Character.digit(s.charAt(i + 1), 16));
+        }
+        return data;
+    }
+
+    private void unzip(String fileZip, File destDir) throws IOException {
+        byte[] buffer = new byte[1024];
+        ZipInputStream zis = new ZipInputStream(new FileInputStream(fileZip));
+        ZipEntry zipEntry = zis.getNextEntry();
+        while (zipEntry != null) {
+            File newFile = newFile(destDir, zipEntry);
+            if (zipEntry.isDirectory()) {
+                if (!newFile.isDirectory() && !newFile.mkdirs()) {
+                    throw new IOException("Failed to create directory " + newFile);
+                }
+            } else {
+                // fix for Windows-created archives
+                File parent = newFile.getParentFile();
+                if (!parent.isDirectory() && !parent.mkdirs()) {
+                    throw new IOException("Failed to create directory " + parent);
+                }
+
+                // write file content
+                FileOutputStream fos = new FileOutputStream(newFile);
+                int len;
+                while (true) {
+                    try {
+                        len = zis.read(buffer);
+                        if (len <= 0) {
+                            break;
+                        }
+                        fos.write(buffer, 0, len);
+                    } catch (IOException e) {
+                        break;
+                    }
+                }
+                fos.close();
+            }
+            zipEntry = zis.getNextEntry();
+        }
+
+        zis.closeEntry();
+        zis.close();
+    }
+
+    public static File newFile(File destinationDir, ZipEntry zipEntry) throws IOException {
+        File destFile = new File(destinationDir, zipEntry.getName());
+
+        String destDirPath = destinationDir.getCanonicalPath();
+        String destFilePath = destFile.getCanonicalPath();
+
+        if (!destFilePath.startsWith(destDirPath + File.separator)) {
+            throw new IOException("Entry is outside of the target dir: " + zipEntry.getName());
+        }
+
+        return destFile;
+    }
+
+    class ContextGrpcImpl extends ContextGrpc.ContextImplBase {
+        private ContextImpl contextImpl;
+
+        public ContextGrpcImpl(ContextImpl contextImpl) {
+            this.contextImpl = contextImpl;
+        }
+
+        @Override
+        public void log(InstanceContext.LogMessage request, StreamObserver<Empty> responseObserver) {
+            switch (request.getLogLevel()) {
+                case "trace":
+                    log.trace(request.getMsg());
+                    break;
+                case "debug":
+                    log.debug(request.getMsg());
+                    break;
+                case "warn":
+                case "warning":
+                    log.warn(request.getMsg());
+                    break;
+                case "error":
+                    log.error(request.getMsg());
+                    break;
+                default:
+                    log.info(request.getMsg());
+                    break;
+            }
+            responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+            responseObserver.onCompleted();
+        }
+
+        @Override
+        public void publish(InstanceContext.PulsarMessage request,
+                            StreamObserver<Empty> responseObserver) {
+            contextImpl.publish(request.getTopic(), request.getPayload().toByteArray()).thenApply(messageId -> {
+                responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+                responseObserver.onCompleted();
+                return null;
+            }).exceptionally(ex -> {
+                responseObserver.onError(ex);
+                return null;
+            });
+        }
+
+        @Override
+        public void currentRecord(Empty request, StreamObserver<InstanceContext.Record> responseObserver) {
+            contextImpl.getCurrentRecord().getMessage().map(msg -> {
+                InstanceContext.Record.Builder builder = InstanceContext.Record.newBuilder();
+                builder.setPayload(ByteString.copyFrom(msg.getData()));
+                responseObserver.onNext(builder.build());
+                responseObserver.onCompleted();
+                return null;
+            }).orElseGet(() -> {
+                responseObserver.onError(new RuntimeException("No current record"));
+                return null;
+            });
+        }
+
+        @Override
+        public void recordMetrics(InstanceContext.MetricData request, StreamObserver<Empty> responseObserver) {
+            contextImpl.recordMetric(request.getMetricName(), request.getValue());
+            responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+            responseObserver.onCompleted();
+        }
+
+        @Override
+        public void seek(InstanceContext.Partition request, StreamObserver<Empty> responseObserver) {
+            try {
+                contextImpl.seek(request.getTopicName(), request.getPartitionIndex(),
+                        MessageId.fromByteArray(request.getMessageId().toByteArray()));
+            } catch (IOException e) {
+                log.error("Exception in JavaInstance doing seek", e);
+                throw new RuntimeException(e);
+            }
+        }
+
+        @Override
+        public void pause(InstanceContext.Partition request, StreamObserver<Empty> responseObserver) {
+            try {
+                contextImpl.pause(request.getTopicName(), request.getPartitionIndex());
+            } catch (PulsarClientException e) {
+                log.error("Exception in JavaInstance doing pause", e);
+                throw new RuntimeException(e);
+            }
+        }
+
+        @Override
+        public void resume(InstanceContext.Partition request, StreamObserver<Empty> responseObserver) {
+            try {
+                contextImpl.resume(request.getTopicName(), request.getPartitionIndex());
+            } catch (PulsarClientException e) {
+                log.error("Exception in JavaInstance doing resume", e);
+                throw new RuntimeException(e);
+            }
         }
     }
 }

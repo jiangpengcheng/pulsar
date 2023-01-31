@@ -26,6 +26,7 @@ workerHostname: localhost
 workerPort: 6750
 workerPortTls: 6751
 
+functionsWorkerServiceNarPackage: /Users/pengcheng/IdeaProjects/function-mesh-worker-service/target/mesh-worker-service-2.9.3.19.nar
 # The Configuration metadata store url
 # Examples:
 # * zk:my-zk-1:2181,my-zk-2:2181,my-zk-3:2181

@@ -18,19 +18,21 @@
 #
 """
 
-from __future__ import print_function
-import os, os.path, sys, ast, shutil, subprocess, traceback
-import importlib, virtualenv
+import os, os.path, sys, shutil
 from os.path import abspath, exists, dirname
+
 
 # write a file creating intermediate directories
 def write_file(file, body, executable=False):
-    try: os.makedirs(dirname(file), mode=0o755)
-    except: pass
+    try:
+        os.makedirs(dirname(file), mode=0o755)
+    except:
+        pass
     with open(file, mode="wb") as f:
         f.write(body.encode("utf-8"))
     if executable:
         os.chmod(file, 0o755)
+
 
 # copy a file eventually replacing a substring
 def copy_replace(src, dst, match=None, replacement=""):
@@ -40,10 +42,13 @@ def copy_replace(src, dst, match=None, replacement=""):
             body = body.decode("utf-8").replace(match, replacement)
         write_file(dst, body, True)
 
+
 # assemble sources
-def sources(launcher, main, src_dir):
+def sources(lib, launcher, main, src_dir):
     # write the boilerplate in a temp dir
+    shutil.copytree(lib, "%s/lib" % src_dir)
     copy_replace(launcher, "%s/exec__.py" % src_dir, "CLASS_NAME", main)
+
 
 # build virtualenv if there is a requirements.txt
 def virtualenv(tgt_dir):
@@ -57,11 +62,13 @@ def virtualenv(tgt_dir):
                 with open("/tmp/err", "r") as f:
                     sys.stderr.write(f.read())
             else:
-                cmd = ". %s/bin/activate && python -m pip install -r %s >/tmp/err 2>/tmp/err" % (virtualenv_dir, requirements_txt)
+                cmd = ". %s/bin/activate && python -m pip install -r %s >/tmp/err 2>/tmp/err" % (
+                virtualenv_dir, requirements_txt)
                 if os.system(cmd) != 0:
                     with open("/tmp/err", "r") as f:
                         sys.stderr.write(f.read())
     sys.stderr.flush()
+
 
 # compile sources
 def build(src_dir, tgt_dir):
@@ -69,9 +76,9 @@ def build(src_dir, tgt_dir):
     # for scripting languages, move sources and create a launcher
     # move away the action dir and replace with the new
     try:
-      shutil.rmtree(tgt_dir)
+        shutil.rmtree(tgt_dir)
     except:
-      pass
+        pass
     shutil.move(src_dir, tgt_dir)
     tgt_file = "%s/exec" % tgt_dir
     write_file(tgt_file, """#!/bin/bash
@@ -82,15 +89,17 @@ source virtualenv/bin/activate || true
 """, True)
     return tgt_file
 
+
 if __name__ == '__main__':
     if len(sys.argv) < 4:
         sys.stdout.write("usage: <main-function> <source-dir> <target-dir>\n")
         sys.stdout.flush()
         sys.exit(1)
+    lib = "%s/python/lib" % dirname(dirname(sys.argv[0]))
     launcher = "%s/python/launcher.py" % dirname(dirname(sys.argv[0]))
     src_dir = abspath(sys.argv[2])
     tgt_dir = abspath(sys.argv[3])
-    sources(launcher, sys.argv[1], src_dir)
+    sources(lib, launcher, sys.argv[1], src_dir)
     build(abspath(sys.argv[2]), tgt_dir)
     virtualenv(tgt_dir)
     sys.stdout.flush()
