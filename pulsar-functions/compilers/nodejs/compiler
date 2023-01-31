@@ -120,7 +120,7 @@ function sources(launcher, main_file, src_dir) {
 
 function build(src_dir, bin_dir) {
   try {
-    fs.rmSync(bin_dir, { recursive: true })
+    fs.rmSync(bin_dir, {force: true, recursive: true})
     fs.renameSync(src_dir, bin_dir)
     execFileSync("tsc", [], {
       cwd: bin_dir,

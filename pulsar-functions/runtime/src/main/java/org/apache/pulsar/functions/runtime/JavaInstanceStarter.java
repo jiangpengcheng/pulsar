@@ -192,36 +192,42 @@ public class JavaInstanceStarter implements AutoCloseable {
         }
         JsonFormat.parser().merge(functionDetailsJsonString, functionDetailsBuilder);
         inferringMissingTypeClassName(functionDetailsBuilder, functionInstanceClassLoader);
+
+        functionDetailsBuilder.setSecretsProvider(secretsProviderClassName);
+        functionDetailsBuilder.setSecretsConfig(secretsProviderConfig);
+
         Function.FunctionDetails functionDetails = functionDetailsBuilder.build();
         instanceConfig.setFunctionDetails(functionDetails);
         instanceConfig.setPort(port);
         instanceConfig.setMetricsPort(metricsPort);
-
-        Map<String, String> secretsProviderConfigMap = null;
-        if (!StringUtils.isEmpty(secretsProviderConfig)) {
-            if (secretsProviderConfig.charAt(0) == '\'') {
-                secretsProviderConfig = secretsProviderConfig.substring(1);
+        SecretsProvider secretsProvider = null;
+        if (functionDetails.getRuntime() == org.apache.pulsar.functions.proto.Function.FunctionDetails.Runtime.JAVA) {
+            Map<String, String> secretsProviderConfigMap = null;
+            if (!StringUtils.isEmpty(secretsProviderConfig)) {
+                if (secretsProviderConfig.charAt(0) == '\'') {
+                    secretsProviderConfig = secretsProviderConfig.substring(1);
+                }
+                if (secretsProviderConfig.charAt(secretsProviderConfig.length() - 1) == '\'') {
+                    secretsProviderConfig = secretsProviderConfig.substring(0, secretsProviderConfig.length() - 1);
+                }
+                Type type = new TypeToken<Map<String, String>>() {
+                }.getType();
+                secretsProviderConfigMap = new Gson().fromJson(secretsProviderConfig, type);
             }
-            if (secretsProviderConfig.charAt(secretsProviderConfig.length() - 1) == '\'') {
-                secretsProviderConfig = secretsProviderConfig.substring(0, secretsProviderConfig.length() - 1);
+
+            if (StringUtils.isEmpty(secretsProviderClassName)) {
+                secretsProviderClassName = ClearTextSecretsProvider.class.getName();
             }
-            Type type = new TypeToken<Map<String, String>>() {
-            }.getType();
-            secretsProviderConfigMap = new Gson().fromJson(secretsProviderConfig, type);
-        }
 
-        if (StringUtils.isEmpty(secretsProviderClassName)) {
-            secretsProviderClassName = ClearTextSecretsProvider.class.getName();
+            try {
+                secretsProvider =
+                        (SecretsProvider) Reflections.createInstance(secretsProviderClassName,
+                                functionInstanceClassLoader);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            secretsProvider.init(secretsProviderConfigMap);
         }
-
-        SecretsProvider secretsProvider;
-        try {
-            secretsProvider =
-                    (SecretsProvider) Reflections.createInstance(secretsProviderClassName, functionInstanceClassLoader);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-        secretsProvider.init(secretsProviderConfigMap);
 
         // Collector Registry for prometheus metrics
         FunctionCollectorRegistry collectorRegistry = FunctionCollectorRegistry.getDefaultImplementation();

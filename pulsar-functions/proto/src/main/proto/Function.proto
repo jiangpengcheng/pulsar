@@ -72,6 +72,8 @@ message FunctionDetails {
     string logTopic = 5;
     ProcessingGuarantees processingGuarantees = 6;
     string userConfig = 7;
+    string secretsProvider =24;
+    string secretsConfig =25;
     string secretsMap = 16;
     Runtime runtime = 8;
     // Deprecated since, see https://github.com/apache/pulsar/issues/15560
