@@ -89,9 +89,6 @@ public class ThreadRuntime implements Runtime {
                   String narExtractionDirectory,
                   Optional<ConnectorsManager> connectorsManager) {
         this.instanceConfig = instanceConfig;
-        if (instanceConfig.getFunctionDetails().getRuntime() != Function.FunctionDetails.Runtime.JAVA) {
-            throw new RuntimeException("Thread Container only supports Java Runtime");
-        }
 
         this.threadGroup = threadGroup;
         this.fnCache = fnCache;
@@ -181,8 +178,11 @@ public class ThreadRuntime implements Runtime {
     @Override
     public void start() throws Exception {
 
+        ClassLoader functionClassLoader = Thread.currentThread().getContextClassLoader();
         // extract class loader for function
-        ClassLoader functionClassLoader = getFunctionClassLoader(instanceConfig, jarFile, narExtractionDirectory, fnCache, connectorsManager);
+        if (instanceConfig.getFunctionDetails().getRuntime() == Function.FunctionDetails.Runtime.JAVA) {
+            functionClassLoader = getFunctionClassLoader(instanceConfig, jarFile, narExtractionDirectory, fnCache, connectorsManager);
+        }
 
         // re-initialize JavaInstanceRunnable so that variables in constructor can be re-initialized
         this.javaInstanceRunnable = new JavaInstanceRunnable(

@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -32,7 +32,6 @@ public class Tester {
         instanceConfig.setInstanceId(0);
         instanceConfig.setClusterName("standalone");
         instanceConfig.setFunctionId("test-avro0-completed");
-        instanceConfig.setTransformFunctionId("trans-0");
         instanceConfig.setFunctionVersion("0.0.1");
 
         instanceConfig.setMaxBufferedTuples(1000);
@@ -42,17 +41,16 @@ public class Tester {
         Function.FunctionDetails.Builder functionDetailsBuilder = Function.FunctionDetails.newBuilder();
 
         Function.SourceSpec.Builder sourceSpecBuilder = Function.SourceSpec.newBuilder();
-        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-py-package-avro0-completed-source", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).setSchemaType("avro").build());
+        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-py-package-avro0-completed-source", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).build());
         sourceSpecBuilder.setSubscriptionType(Function.SubscriptionType.SHARED);
         sourceSpecBuilder.setSubscriptionName("test-avro2-sub");
         sourceSpecBuilder.setSubscriptionPosition(Function.SubscriptionPosition.LATEST);
-        sourceSpecBuilder.setTypeClassName("schema.Student");
+        sourceSpecBuilder.setTypeClassName("string");
         functionDetailsBuilder.setSource(sourceSpecBuilder.build());
 
         Function.SinkSpec.Builder sinkSpecBuilder = Function.SinkSpec.newBuilder();
         sinkSpecBuilder.setTopic("persistent://public/default/test-py-package-avro0-completed-sink");
-        sinkSpecBuilder.setSchemaType("avro");
-        sinkSpecBuilder.setTypeClassName("schema.Person");
+        sinkSpecBuilder.setTypeClassName("string");
         functionDetailsBuilder.setSink(sinkSpecBuilder.build());
 
         functionDetailsBuilder.setTenant("public");
@@ -60,7 +58,7 @@ public class Tester {
         functionDetailsBuilder.setName("test-py-package");
 
         functionDetailsBuilder.setRuntime(Function.FunctionDetails.Runtime.PYTHON);
-        functionDetailsBuilder.setClassName("student");
+        functionDetailsBuilder.setClassName("exclamation.ExclamationFunction");
 
         functionDetailsBuilder.setComponentType(Function.FunctionDetails.ComponentType.FUNCTION);
         instanceConfig.setFunctionDetails(functionDetailsBuilder.build());
@@ -74,10 +72,10 @@ public class Tester {
         JavaInstanceRunnable javaInstanceRunnable = new JavaInstanceRunnable(
                 instanceConfig,
                 clientBuilder,
-                "stu.zip",
+                "exclamation.py",
                 pulsarClient,
                 null,
-                null, null, null, null, Thread.currentThread().getContextClassLoader(), null);
+                null, null, null, null, Thread.currentThread().getContextClassLoader());
         javaInstanceRunnable.run();
     }
 }

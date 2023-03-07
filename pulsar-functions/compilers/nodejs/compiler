@@ -69,71 +69,31 @@ function dependencies(src_dir, main_func) {
 
 // assemble sources
 function sources(launcher, main_file, src_dir) {
-  // init config
-  const src_config = src_dir + "/tsconfig.json"
-  let config = {}
-  if (fs.existsSync(src_config)) {
-    config = JSON.parse(fs.readFileSync(src_config, "utf-8"))
-  }
-
-  if (!("files" in config)) {
-    config["files"] = []
-  }
-
-  if (!("compilerOptions" in config)) {
-    config["compilerOptions"] = {}
-  }
-
-  config["compilerOptions"]["lib"] = ["es2018", "dom"]
-  config["compilerOptions"]["inlineSourceMap"] = true
-
-  if ("sourceMap" in config["compilerOptions"]) {
-    delete config["compilerOptions"]["sourceMap"]
-  }
-
-  if (!("outDir" in config["compilerOptions"])) {
-    config["compilerOptions"]["outDir"] = "."
-  }
-
   let src_file = src_dir + "/" + main_file + ".js"
   if (!fs.existsSync(src_file)) {
     src_file = src_dir + "/" + main_file + ".ts"
   }
-  const tgt_file = src_dir + "/" + main_file + ".ts"
-  if (fs.existsSync(src_file) && !fs.existsSync(tgt_file)) {
-    const re = RegExp('(?<!export\\s+)function\\s+process')
-    copy_replace(src_file, tgt_file, re, "export function process")
-    fs.rmSync(src_file);
-    config["files"].push(main_file + ".ts")
-  }
+  fs.appendFileSync(src_file, "\n\nmodule.exports = process;")
 
   // copy launcher and replace main
   copy_replace(launcher,
-    src_dir + "/exec__.ts",
-    'require("./main__").process',
-    'require("./' + main_file + '").process')
-
-  // complete tsconfig.json
-  config["files"].push("exec__.ts")
-  write_file(src_config, JSON.stringify(config))
+      src_dir + "/exec__.js",
+      'require("main__")',
+      'require("./' + main_file + '")')
 }
 
 function build(src_dir, bin_dir) {
   try {
     fs.rmSync(bin_dir, {force: true, recursive: true})
+    fs.mkdirSync(bin_dir, {recursive: true})
     fs.renameSync(src_dir, bin_dir)
-    execFileSync("tsc", [], {
-      cwd: bin_dir,
-      stdio: 'inherit',
-      stderr: 'inherit'
-    })
   } catch (err) {
     console.log("syntax error:", err.message)
   } finally {
     write_file(bin_dir + "/exec",
         '#!/bin/bash\n' +
         'cd "$(dirname $0)"\n' +
-        'node exec__.js\n', true)
+        'node exec__.js "$@"\n', true)
   }
 }
 
@@ -142,7 +102,7 @@ function compile() {
     console.log("usage: <main-function> <source-dir> <target-dir>")
     process.exit(1)
   }
-  const launcher = path.dirname(path.dirname(process.argv[1])) + "/nodejs/launcher.ts"
+  const launcher = path.dirname(path.dirname(process.argv[1])) + "/nodejs/launcher.js"
   const src_dir = path.resolve(process.argv[3])
   const bin_dir = path.resolve(process.argv[4])
   let main_func = process.argv[2]

@@ -118,42 +118,37 @@ def main():
                                        secrets_provider, state, stub)
 
     while True:
-        line = stdin.readline().rstrip()
-        if not line:
-            break
-        record = json.loads(line)
-        topic = record['topicName']
-        stderr.write(json.dumps(record))
+        topic = stdin.buffer.readline().decode('utf-8').rstrip()
         if not topic:
-            break
+            continue
 
-        # deserialize the input
-        msg = bytes.fromhex(record['payload'])
-        if input_schemas.get(topic) is not None:
-            msg = input_schemas[topic].decode(msg)
-        elif input_serdes.get(topic) is not None:
-            msg = input_serdes[topic].deserialize(msg)
+        msg = stdin.buffer.readline().rstrip()
+        if not msg:
+            continue
 
         try:
+            # deserialize the input
+            if input_schemas.get(topic) is not None:
+                msg = input_schemas[topic].decode(msg)
+            elif input_serdes.get(topic) is not None:
+                msg = input_serdes[topic].deserialize(msg)
+
             if function_class is not None:
-                context_impl.set_current_msg(record)
                 res = function_class.process(msg, context_impl)
             else:
                 res = function_pure_function.process(msg)
 
             # serialize output to bytes
             if output_schema is not None:
-                res = output_schema.encode(res).hex()
+                res = output_schema.encode(res)
             elif output_serde is not None:
-                res = output_serde.serialize(res).hex()
-            else:
-                res = res.hex()
+                res = output_serde.serialize(res)
         except Exception as ex:
             print(traceback.format_exc(), file=stderr)
-            res = ("error: %s" % str(ex))
+            res = ("error: %s" % str(ex)).encode('utf-8')
 
-        stdout.write(res)
-        stdout.write('\n')
+        stdout.buffer.write(res)
+        stdout.buffer.write('\n'.encode('utf-8'))
         stdout.flush()
         stderr.flush()
 

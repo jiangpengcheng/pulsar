@@ -1485,7 +1485,7 @@ flexible messaging model and an intuitive client API.</description>
         <configuration>
           <licenseSets>
             <licenseSet>
-              <header>${pulsar.basedir}/src/license-header.txt</header>
+              <header>/Users/pengcheng/IdeaProjects/pulsar/src/license-header.txt</header>
               <excludes>
                 <exclude>LICENSE</exclude>
                 <exclude>NOTICE</exclude>

@@ -34,6 +34,14 @@ service Context {
   rpc Resume(Partition) returns (google.protobuf.Empty) {}
 }
 
+message Request {
+  bytes payload = 1;
+}
+
+message Result {
+  bytes payload = 1;
+}
+
 message LogMessage {
   string msg = 1;
   string logLevel = 2;

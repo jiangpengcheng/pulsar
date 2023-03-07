@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -32,7 +32,6 @@ public class GoTester {
         instanceConfig.setInstanceId(0);
         instanceConfig.setClusterName("standalone");
         instanceConfig.setFunctionId("test-0");
-        instanceConfig.setTransformFunctionId("trans-0");
         instanceConfig.setFunctionVersion("0.0.1");
 
         instanceConfig.setMaxBufferedTuples(1000);
@@ -76,7 +75,7 @@ public class GoTester {
                 "exclamation.go",
                 pulsarClient,
                 null,
-                null, null, null, null, Thread.currentThread().getContextClassLoader(), null);
+                null, null, null, null, Thread.currentThread().getContextClassLoader());
         javaInstanceRunnable.run();
     }
 }

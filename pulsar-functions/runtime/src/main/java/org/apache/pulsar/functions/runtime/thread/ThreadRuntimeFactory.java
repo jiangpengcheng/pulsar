@@ -34,10 +34,12 @@ import org.apache.pulsar.functions.instance.InstanceCache;
 import org.apache.pulsar.functions.instance.InstanceConfig;
 import org.apache.pulsar.functions.instance.InstanceUtils;
 import org.apache.pulsar.functions.instance.stats.FunctionCollectorRegistry;
+import org.apache.pulsar.functions.proto.Function;
 import org.apache.pulsar.functions.runtime.RuntimeCustomizer;
 import org.apache.pulsar.functions.runtime.RuntimeFactory;
 import org.apache.pulsar.functions.runtime.RuntimeUtils;
 import org.apache.pulsar.functions.secretsprovider.SecretsProvider;
+import org.apache.pulsar.functions.secretsproviderconfigurator.DefaultSecretsProviderConfigurator;
 import org.apache.pulsar.functions.secretsproviderconfigurator.SecretsProviderConfigurator;
 import org.apache.pulsar.common.util.Reflections;
 import org.apache.pulsar.functions.utils.functioncache.FunctionCacheManager;
@@ -169,12 +171,18 @@ public class ThreadRuntimeFactory implements RuntimeFactory {
                                          String originalCodeFileName,
                                          Long expectedHealthCheckInterval) {
         SecretsProvider secretsProvider = defaultSecretsProvider;
-        if (secretsProvider == null) {
-            String secretsProviderClassName = secretsProviderConfigurator.getSecretsProviderClassName(instanceConfig.getFunctionDetails());
-            secretsProvider = (SecretsProvider) Reflections.createInstance(secretsProviderClassName, this.rootClassLoader);
-            log.info("Initializing secrets provider {} with configs: {}",
-              secretsProvider.getClass().getName(), secretsProviderConfigurator.getSecretsProviderConfig(instanceConfig.getFunctionDetails()));
-            secretsProvider.init(secretsProviderConfigurator.getSecretsProviderConfig(instanceConfig.getFunctionDetails()));
+        if (instanceConfig.getFunctionDetails().getRuntime() == Function.FunctionDetails.Runtime.JAVA) {
+            if (secretsProvider == null) {
+                String secretsProviderClassName =
+                        secretsProviderConfigurator.getSecretsProviderClassName(instanceConfig.getFunctionDetails());
+                secretsProvider =
+                        (SecretsProvider) Reflections.createInstance(secretsProviderClassName, this.rootClassLoader);
+                log.info("Initializing secrets provider {} with configs: {}",
+                        secretsProvider.getClass().getName(),
+                        secretsProviderConfigurator.getSecretsProviderConfig(instanceConfig.getFunctionDetails()));
+                secretsProvider.init(
+                        secretsProviderConfigurator.getSecretsProviderConfig(instanceConfig.getFunctionDetails()));
+            }
         }
 
         return new ThreadRuntime(

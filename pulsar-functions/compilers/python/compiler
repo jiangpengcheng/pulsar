@@ -63,7 +63,7 @@ def virtualenv(tgt_dir):
                     sys.stderr.write(f.read())
             else:
                 cmd = ". %s/bin/activate && python -m pip install -r %s >/tmp/err 2>/tmp/err" % (
-                virtualenv_dir, requirements_txt)
+                    virtualenv_dir, requirements_txt)
                 if os.system(cmd) != 0:
                     with open("/tmp/err", "r") as f:
                         sys.stderr.write(f.read())

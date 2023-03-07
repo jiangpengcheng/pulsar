@@ -181,8 +181,12 @@ public class JavaInstanceStarter implements AutoCloseable {
         JsonFormat.parser().merge(functionDetailsJsonString, functionDetailsBuilder);
         inferringMissingTypeClassName(functionDetailsBuilder, functionInstanceClassLoader);
 
-        functionDetailsBuilder.setSecretsProvider(secretsProviderClassName);
-        functionDetailsBuilder.setSecretsConfig(secretsProviderConfig);
+        if (StringUtils.isNotEmpty(secretsProviderClassName)) {
+            functionDetailsBuilder.setSecretsProvider(secretsProviderClassName);
+        }
+        if (StringUtils.isNotEmpty(secretsProviderConfig)) {
+            functionDetailsBuilder.setSecretsConfig(secretsProviderConfig);
+        }
 
         Function.FunctionDetails functionDetails = functionDetailsBuilder.build();
         instanceConfig.setFunctionDetails(functionDetails);
@@ -234,7 +238,7 @@ public class JavaInstanceStarter implements AutoCloseable {
                 exposePulsarAdminClientEnabled, webServiceUrl);
 
         String codeFile = jarFile;
-        if (codeFile.isEmpty()) {
+        if (StringUtils.isEmpty(codeFile)) {
             codeFile = functionFile;
         }
 

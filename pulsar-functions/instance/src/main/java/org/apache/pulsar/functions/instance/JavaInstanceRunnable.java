@@ -21,8 +21,6 @@ package org.apache.pulsar.functions.instance;
 
 import static org.apache.pulsar.functions.utils.FunctionCommon.convertFromFunctionDetailsSubscriptionPosition;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.google.common.base.Preconditions;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Empty;
@@ -31,8 +29,6 @@ import com.scurrilous.circe.checksum.Crc32cIntChecksum;
 import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
-import io.netty.channel.epoll.EpollEventLoopGroup;
-import io.netty.channel.epoll.EpollServerDomainSocketChannel;
 import io.netty.channel.kqueue.KQueueEventLoopGroup;
 import io.netty.channel.kqueue.KQueueServerDomainSocketChannel;
 import io.netty.channel.unix.DomainSocketAddress;
@@ -54,6 +50,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
@@ -81,7 +78,6 @@ import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.common.util.Reflections;
 import org.apache.pulsar.functions.api.Function;
 import org.apache.pulsar.functions.api.Record;
-import org.apache.pulsar.functions.api.RecordMetadata;
 import org.apache.pulsar.functions.api.StateStore;
 import org.apache.pulsar.functions.api.StateStoreContext;
 import org.apache.pulsar.functions.instance.state.BKStateStoreProviderImpl;
@@ -146,6 +142,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
 
     private BufferedReader functionOut;
     private BufferedOutputStream functionIn;
+    private Process execProcess;
+    LinkedBlockingQueue<ProcessingUnit> processingUnits = new LinkedBlockingQueue<>();
 
     private JavaInstance javaInstance;
     @Getter
@@ -303,7 +301,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             } else {
                 Path srcFile = Paths.get(functionFile);
                 Path dst = Paths.get(destFile.getPath());
-                Files.move(srcFile, dst.resolve(srcFile.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(srcFile, dst.resolve(srcFile.getFileName()), StandardCopyOption.REPLACE_EXISTING);
             }
 
             String compiler = compilers.get(instanceConfig.getFunctionDetails().getRuntime().name().toLowerCase());
@@ -320,26 +318,16 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             BufferedInputStream bis = new BufferedInputStream(
                     compileProcess.getInputStream());
             BufferedReader br = new BufferedReader(new InputStreamReader(bis, StandardCharsets.UTF_8));
-            compileProcess.getErrorStream().transferTo(System.err);
             String line;
             while ((line = br.readLine()) != null) {
                 System.out.println(line);
             }
             if (compileProcess.waitFor() != 0) {
+                printStderr(compileProcess);
                 throw new RuntimeException("Unable to compile : " + instanceConfig.getFunctionDetails().getRuntime());
             }
             bis.close();
             br.close();
-            try {
-                EpollEventLoopGroup group = new EpollEventLoopGroup();
-                grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
-                        .channelType(EpollServerDomainSocketChannel.class)
-                        .workerEventLoopGroup(group)
-                        .bossEventLoopGroup(group)
-                        .addService(new ContextGrpcImpl(contextImpl))
-                        .build()
-                        .start();
-            } catch (Exception e) {
                 KQueueEventLoopGroup group = new KQueueEventLoopGroup();
                 grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
                         .channelType(KQueueServerDomainSocketChannel.class)
@@ -348,7 +336,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                         .addService(new ContextGrpcImpl(contextImpl))
                         .build()
                         .start();
-            }
 
             // start executor
             String[] execCommand = new String[]{
@@ -396,28 +383,36 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 list.add(instanceConfig.getFunctionDetails().getLogTopic());
             }
             String[] commands = new String[list.size()];
-            Process execProcess = Runtime.getRuntime().exec(list.toArray(commands));
-            execProcess.onExit().thenAccept(p -> {
-                try {
-                    p.getErrorStream().transferTo(System.err);
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
+            for (int i = 0; i < 5; i++) {
+                log.info("Starting processing unit using command: {}", StringUtils.join(list, " "));
+                ProcessingUnit unit = new ProcessingUnit(Runtime.getRuntime().exec(list.toArray(commands)));
+                processingUnits.put(unit);
+                execProcess = Runtime.getRuntime().exec(list.toArray(commands));
+                if (execProcess.isAlive()) {
+                    log.info("Process is alive");
+                    functionOut = new BufferedReader(
+                            new InputStreamReader(new BufferedInputStream(execProcess.getInputStream()),
+                                    StandardCharsets.UTF_8));
+                    functionIn = new BufferedOutputStream(execProcess.getOutputStream());
+                } else {
+                    throw new RuntimeException("Unable to start process");
                 }
-                this.close();
-            });
-            if (execProcess.isAlive()) {
-                log.info("Process is alive with pid: " + execProcess.pid());
-                functionOut = new BufferedReader(
-                        new InputStreamReader(new BufferedInputStream(execProcess.getInputStream()),
-                                StandardCharsets.UTF_8));
-                functionIn = new BufferedOutputStream(execProcess.getOutputStream());
-            } else {
-                throw new RuntimeException("Unable to start process");
             }
         }
 
         // to signal member variables are initialized
         isInitialized = true;
+    }
+
+    private void printStderr(Process process) throws IOException {
+        BufferedInputStream es = new BufferedInputStream(process.getErrorStream());
+        BufferedReader er = new BufferedReader(new InputStreamReader(es, StandardCharsets.UTF_8));
+        String errLine;
+        while ((errLine = er.readLine()) != null) {
+            System.out.println(errLine);
+        }
+        es.close();
+        er.close();
     }
 
     ContextImpl setupContext() throws PulsarClientException {
@@ -443,8 +438,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             Thread currentThread = Thread.currentThread();
             Consumer<Throwable> asyncErrorHandler = throwable -> currentThread.interrupt();
             AsyncResultConsumer asyncResultConsumer = (record, javaExecutionResult) -> handleResult(record, javaExecutionResult);
-            ObjectMapper mapper = ObjectMapperFactory.getThreadLocal();
-            mapper.registerModule(new Jdk8Module());
 
             while (true) {
                 currentRecord = readInput();
@@ -478,19 +471,17 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                             asyncErrorHandler);
                     Thread.currentThread().setContextClassLoader(instanceClassLoader);
                 } else {
+                    if (execProcess != null && !execProcess.isAlive()) {
+                        printStderr(execProcess);
+                        throw new RuntimeException("Processing unit is exited with code: " + execProcess.exitValue());
+                    }
                     currentRecord.getMessage().map(msg -> {
                         try {
-                            RecordMetadata metadata = new RecordMetadata(currentRecord.getTopicName(),
-                                    currentRecord.getKey(),
-                                    currentRecord.getEventTime(),
-                                    currentRecord.getPartitionId(),
-                                    currentRecord.getPartitionIndex(),
-                                    currentRecord.getRecordSequence(),
-                                    currentRecord.getProperties(),
-                                    msg.getMessageId(),
-                                    byteArrayToHexString(msg.getData()));
                             // write the topic name too
-                            functionIn.write(mapper.writeValueAsString(metadata).getBytes(StandardCharsets.UTF_8));
+                            functionIn.write(msg.getTopicName().getBytes(StandardCharsets.UTF_8));
+                            functionIn.write("\n".getBytes(StandardCharsets.UTF_8));
+                            functionIn.flush();
+                            functionIn.write(msg.getData());
                             functionIn.write("\n".getBytes(StandardCharsets.UTF_8));
                             functionIn.flush();
                         } catch (IOException e) {
@@ -500,11 +491,15 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                     });
                     JavaExecutionResult executionResult = new JavaExecutionResult();
                     String output = functionOut.readLine();
-                    if (output.startsWith(errorHeader)) {
-                        log.error("Failed to process message: {}, error: {}", currentRecord.getRecordSequence(),
-                                output.replaceFirst(errorHeader, ""));
+                    if (output == null || output.startsWith(errorHeader)) {
+                        String errorMsg = "empty output";
+                        if (output != null) {
+                            errorMsg = output.replaceFirst(errorHeader, "");
+                        }
+                        log.error("Failed to process message: {}, error: {}", currentRecord.getRecordSequence(), errorMsg);
+                        executionResult.setUserException(new Exception(errorMsg));
                     } else {
-                        executionResult.setResult(hexStringToByteArray(output));
+                        executionResult.setResult(output.getBytes(StandardCharsets.UTF_8));
                         result = executionResult;
                     }
                 }
@@ -1181,6 +1176,32 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         }
 
         return destFile;
+    }
+
+    private class ProcessingUnit {
+        private BufferedReader functionOut;
+        private BufferedOutputStream functionIn;
+        private Process execProcess;
+        private boolean available;
+        public ProcessingUnit(Process process) {
+            this.execProcess = process;
+            this.functionOut = new BufferedReader(
+                    new InputStreamReader(new BufferedInputStream(execProcess.getInputStream()),
+                            StandardCharsets.UTF_8));
+            this.functionIn = new BufferedOutputStream(execProcess.getOutputStream());
+            this.available = true;
+        }
+
+        public void run(Record<?> record) {
+            if (this.available) {
+                this.available = false;
+            }
+        }
+
+        public void close() throws IOException {
+            this.functionIn.close();
+            this.functionOut.close();
+        }
     }
 
     class ContextGrpcImpl extends ContextGrpc.ContextImplBase {
