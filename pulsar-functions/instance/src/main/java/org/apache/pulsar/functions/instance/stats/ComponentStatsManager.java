@@ -103,6 +103,8 @@ public abstract class ComponentStatsManager implements AutoCloseable {
 
     public abstract void processTimeEnd();
 
+    public abstract void processTimeDuration(Double endTimeMs);
+
     public abstract double getTotalProcessedSuccessfully();
 
     public abstract double getTotalRecordsReceived();

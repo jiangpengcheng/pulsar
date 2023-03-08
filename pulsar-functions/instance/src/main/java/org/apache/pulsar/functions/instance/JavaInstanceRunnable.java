@@ -29,6 +29,8 @@ import com.scurrilous.circe.checksum.Crc32cIntChecksum;
 import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
+import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.channel.epoll.EpollServerDomainSocketChannel;
 import io.netty.channel.kqueue.KQueueEventLoopGroup;
 import io.netty.channel.kqueue.KQueueServerDomainSocketChannel;
 import io.netty.channel.unix.DomainSocketAddress;
@@ -40,6 +42,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -49,24 +52,31 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import lombok.Data;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.jodah.typetools.TypeResolver;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.logging.log4j.ThreadContext;
 import org.apache.logging.log4j.core.LoggerContext;
 import org.apache.logging.log4j.core.config.Configuration;
 import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.api.ClientBuilder;
+import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
@@ -116,6 +126,13 @@ import org.slf4j.LoggerFactory;
  */
 @Slf4j
 public class JavaInstanceRunnable implements AutoCloseable, Runnable {
+    @Data
+    public static class AsyncProcessingRequest {
+        private final Record<?> record;
+        private final Long startTime;
+        private final CompletableFuture<Pair<Integer, JavaExecutionResult>> processResult;
+    }
+
     private static final String srcRoot = "action-src";
     private static final String binRoot = "action-bin";
     private static final String errorHeader = "error:";
@@ -140,10 +157,11 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     private String functionFile;
     private Server grpcServer;
 
-    private BufferedReader functionOut;
-    private BufferedOutputStream functionIn;
-    private Process execProcess;
-    LinkedBlockingQueue<ProcessingUnit> processingUnits = new LinkedBlockingQueue<>();
+    private final int parallelism;
+    private final ArrayList<ProcessingUnit> units;
+    private final LinkedBlockingQueue<AsyncProcessingRequest> pendingAsyncRequests;
+    private final AtomicBoolean processingFlag = new AtomicBoolean(false);
+    private boolean processingAttempt = false;
 
     private JavaInstance javaInstance;
     @Getter
@@ -216,6 +234,15 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 instanceConfig.getClusterName(),
                 FunctionCommon.getFullyQualifiedName(instanceConfig.getFunctionDetails())
         };
+        int parallelism1;
+        try {
+            parallelism1 = Integer.parseInt(System.getenv("UNIT_PARALLELISM"));
+        } catch (NumberFormatException e) {
+            parallelism1 = 3;
+        }
+        this.parallelism = parallelism1;
+        this.units = new ArrayList<>(parallelism);
+        this.pendingAsyncRequests = new LinkedBlockingQueue<>(this.instanceConfig.getMaxPendingAsyncRequests());
 
         this.componentType = InstanceUtils.calculateSubjectType(instanceConfig.getFunctionDetails());
 
@@ -328,14 +355,26 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             }
             bis.close();
             br.close();
-                KQueueEventLoopGroup group = new KQueueEventLoopGroup();
+            try {
+                EpollEventLoopGroup group = new EpollEventLoopGroup();
                 grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
-                        .channelType(KQueueServerDomainSocketChannel.class)
+                        .channelType(EpollServerDomainSocketChannel.class)
                         .workerEventLoopGroup(group)
                         .bossEventLoopGroup(group)
                         .addService(new ContextGrpcImpl(contextImpl))
                         .build()
                         .start();
+            } catch (Exception e) {
+                KQueueEventLoopGroup group = new KQueueEventLoopGroup();
+                grpcServer =
+                        NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
+                                .channelType(KQueueServerDomainSocketChannel.class)
+                                .workerEventLoopGroup(group)
+                                .bossEventLoopGroup(group)
+                                .addService(new ContextGrpcImpl(contextImpl))
+                                .build()
+                                .start();
+            }
 
             // start executor
             String[] execCommand = new String[]{
@@ -383,20 +422,10 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 list.add(instanceConfig.getFunctionDetails().getLogTopic());
             }
             String[] commands = new String[list.size()];
-            for (int i = 0; i < 5; i++) {
+            for (int i = 0; i < parallelism; i++) {
                 log.info("Starting processing unit using command: {}", StringUtils.join(list, " "));
-                ProcessingUnit unit = new ProcessingUnit(Runtime.getRuntime().exec(list.toArray(commands)));
-                processingUnits.put(unit);
-                execProcess = Runtime.getRuntime().exec(list.toArray(commands));
-                if (execProcess.isAlive()) {
-                    log.info("Process is alive");
-                    functionOut = new BufferedReader(
-                            new InputStreamReader(new BufferedInputStream(execProcess.getInputStream()),
-                                    StandardCharsets.UTF_8));
-                    functionIn = new BufferedOutputStream(execProcess.getOutputStream());
-                } else {
-                    throw new RuntimeException("Unable to start process");
-                }
+                ProcessingUnit unit = new ProcessingUnit(list.toArray(commands), i);
+                units.add(unit);
             }
         }
 
@@ -423,7 +452,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 pulsarAdmin, clientBuilder);
     }
 
-    public interface AsyncResultConsumer  {
+    public interface AsyncResultConsumer {
         void accept(Record record, JavaExecutionResult javaExecutionResult) throws Exception;
     }
 
@@ -437,7 +466,10 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
 
             Thread currentThread = Thread.currentThread();
             Consumer<Throwable> asyncErrorHandler = throwable -> currentThread.interrupt();
-            AsyncResultConsumer asyncResultConsumer = (record, javaExecutionResult) -> handleResult(record, javaExecutionResult);
+            AsyncResultConsumer asyncResultConsumer =
+                    (record, javaExecutionResult) -> handleResult(record, javaExecutionResult);
+
+            Random rand = new Random();
 
             while (true) {
                 currentRecord = readInput();
@@ -457,11 +489,11 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 // set last invocation time
                 stats.setLastInvocation(System.currentTimeMillis());
 
-                // start time for process latency stat
-                stats.processTimeStart();
-
                 // process the message
                 if (javaInstance != null) {
+                    // start time for process latency stat
+                    stats.processTimeStart();
+
                     addLogTopicHandler();
                     Thread.currentThread().setContextClassLoader(functionClassLoader);
                     result = javaInstance.handleMessage(
@@ -470,42 +502,33 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                             asyncResultConsumer,
                             asyncErrorHandler);
                     Thread.currentThread().setContextClassLoader(instanceClassLoader);
-                } else {
-                    if (execProcess != null && !execProcess.isAlive()) {
-                        printStderr(execProcess);
-                        throw new RuntimeException("Processing unit is exited with code: " + execProcess.exitValue());
-                    }
-                    currentRecord.getMessage().map(msg -> {
-                        try {
-                            // write the topic name too
-                            functionIn.write(msg.getTopicName().getBytes(StandardCharsets.UTF_8));
-                            functionIn.write("\n".getBytes(StandardCharsets.UTF_8));
-                            functionIn.flush();
-                            functionIn.write(msg.getData());
-                            functionIn.write("\n".getBytes(StandardCharsets.UTF_8));
-                            functionIn.flush();
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
-                        }
-                        return null;
-                    });
-                    JavaExecutionResult executionResult = new JavaExecutionResult();
-                    String output = functionOut.readLine();
-                    if (output == null || output.startsWith(errorHeader)) {
-                        String errorMsg = "empty output";
-                        if (output != null) {
-                            errorMsg = output.replaceFirst(errorHeader, "");
-                        }
-                        log.error("Failed to process message: {}, error: {}", currentRecord.getRecordSequence(), errorMsg);
-                        executionResult.setUserException(new Exception(errorMsg));
-                    } else {
-                        executionResult.setResult(output.getBytes(StandardCharsets.UTF_8));
-                        result = executionResult;
-                    }
-                }
 
-                // register end time
-                stats.processTimeEnd();
+                    // register end time
+                    stats.processTimeEnd();
+                } else {
+                    // choose a processing unit randomly
+                    ProcessingUnit unit = units.get(rand.nextInt(units.size()));
+                    CompletableFuture<Pair<Integer, JavaExecutionResult>> processingResult = unit.run(currentRecord);
+                    AsyncProcessingRequest request =
+                            new AsyncProcessingRequest(currentRecord, System.nanoTime(), processingResult);
+                    pendingAsyncRequests.put(request);
+
+                    processingResult.whenCompleteAsync((res, cause) -> {
+                        ProcessingUnit finishedUnit = units.get(res.getLeft());
+                        try {
+                            processAsyncResults(asyncResultConsumer);
+                            // restart processing unit when there are some errors
+                            if (res.getRight().getSystemException() != null) {
+                                log.warn("Restarting processing unit: {}, error: {}", finishedUnit.index,
+                                        res.getRight().getSystemException());
+                                finishedUnit.recreate();
+                            }
+                        } catch (Exception e) {
+                            log.error("Failed to put processing unit: {} back to the queue", finishedUnit.index, e);
+                            asyncErrorHandler.accept(e);
+                        }
+                    });
+                }
 
                 removeLogTopicHandler();
 
@@ -527,6 +550,39 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         } finally {
             log.info("Closing instance");
             close();
+        }
+    }
+
+    private void processAsyncResults(JavaInstanceRunnable.AsyncResultConsumer resultConsumer) throws Exception {
+        if (processingFlag.compareAndSet(false, true)) {
+            AsyncProcessingRequest asyncResult = pendingAsyncRequests.peek();
+            while (asyncResult != null && asyncResult.getProcessResult().isDone()) {
+                pendingAsyncRequests.remove(asyncResult);
+                JavaExecutionResult execResult;
+                try {
+                    execResult = asyncResult.getProcessResult().get().getRight();
+                } catch (ExecutionException e) {
+                    execResult = new JavaExecutionResult();
+                    if (e.getCause() instanceof Exception) {
+                        execResult.setUserException((Exception) e.getCause());
+                    } else {
+                        execResult.setUserException(new Exception(e.getCause()));
+                    }
+                }
+                double endTimeMs = ((double) System.nanoTime() - asyncResult.startTime) / 1.0E6D;
+                stats.processTimeDuration(endTimeMs);
+                resultConsumer.accept(asyncResult.getRecord(), execResult);
+
+                // peek the next result
+                asyncResult = pendingAsyncRequests.peek();
+            }
+            processingFlag.set(false);
+            if (processingAttempt) { // should retry
+                processingAttempt = false;
+                processAsyncResults(resultConsumer);
+            }
+        } else {
+            processingAttempt = true;
         }
     }
 
@@ -567,6 +623,12 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             log.warn("Encountered exception when processing message {}",
                     srcRecord, t);
             stats.incrUserExceptions(t);
+            srcRecord.fail();
+        } else if (result.getSystemException() != null) {
+            Exception t = result.getSystemException();
+            log.warn("Encountered exception when processing message {}",
+                    srcRecord, t);
+            stats.incrSysExceptions(t);
             srcRecord.fail();
         } else {
             if (result.getResult() != null) {
@@ -646,7 +708,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             try {
                 source.close();
             } catch (Throwable e) {
-                log.error("Failed to close source {}", instanceConfig.getFunctionDetails().getSource().getClassName(), e);
+                log.error("Failed to close source {}", instanceConfig.getFunctionDetails().getSource().getClassName(),
+                        e);
             } finally {
                 Thread.currentThread().setContextClassLoader(instanceClassLoader);
             }
@@ -698,21 +761,14 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             grpcServer.shutdown();
         }
 
-        if (functionOut != null) {
+        for (ProcessingUnit unit : units) {
             try {
-                functionOut.close();
+                unit.close();
             } catch (IOException e) {
-                log.error("Failed to close function output stream", e);
+                log.error("Failed to close processing unit {}", unit.index, e);
             }
         }
 
-        if (functionIn != null) {
-            try {
-                functionIn.close();
-            } catch (IOException e) {
-                log.error("Failed to close function input stream", e);
-            }
-        }
     }
 
     public String getStatsAsString() throws IOException {
@@ -800,7 +856,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     }
 
     public InstanceCommunication.FunctionStatus.Builder getFunctionStatus() {
-        InstanceCommunication.FunctionStatus.Builder functionStatusBuilder = InstanceCommunication.FunctionStatus.newBuilder();
+        InstanceCommunication.FunctionStatus.Builder functionStatusBuilder =
+                InstanceCommunication.FunctionStatus.newBuilder();
         if (isInitialized) {
             statsLock.readLock().lock();
             try {
@@ -844,7 +901,9 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     }
 
     private void addLogTopicHandler() {
-        if (logAppender == null) return;
+        if (logAppender == null) {
+            return;
+        }
         setupLogTopicAppender(LoggerContext.getContext(false));
     }
 
@@ -859,7 +918,9 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     }
 
     private void removeLogTopicHandler() {
-        if (logAppender == null) return;
+        if (logAppender == null) {
+            return;
+        }
         removeLogTopicAppender(LoggerContext.getContext(false));
     }
 
@@ -924,7 +985,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             PulsarSourceConfig pulsarSourceConfig;
             // we can use a single consumer to read
             if (topicSchema.size() == 1) {
-                SingleConsumerPulsarSourceConfig singleConsumerPulsarSourceConfig = new SingleConsumerPulsarSourceConfig();
+                SingleConsumerPulsarSourceConfig singleConsumerPulsarSourceConfig =
+                        new SingleConsumerPulsarSourceConfig();
                 Map.Entry<String, ConsumerConfig> entry = topicSchema.entrySet().iterator().next();
                 singleConsumerPulsarSourceConfig.setTopic(entry.getKey());
                 singleConsumerPulsarSourceConfig.setConsumerConfig(entry.getValue());
@@ -956,7 +1018,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 pulsarSourceConfig.setTypeClassName(byte[].class.getName());
             }
 
-            if (sourceSpec.getTimeoutMs() > 0 ) {
+            if (sourceSpec.getTimeoutMs() > 0) {
                 pulsarSourceConfig.setTimeoutMs(sourceSpec.getTimeoutMs());
             }
             if (sourceSpec.getNegativeAckRedeliveryDelayMs() > 0) {
@@ -964,16 +1026,23 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             }
 
             if (this.instanceConfig.getFunctionDetails().hasRetryDetails()) {
-                pulsarSourceConfig.setMaxMessageRetries(this.instanceConfig.getFunctionDetails().getRetryDetails().getMaxMessageRetries());
-                pulsarSourceConfig.setDeadLetterTopic(this.instanceConfig.getFunctionDetails().getRetryDetails().getDeadLetterTopic());
+                pulsarSourceConfig.setMaxMessageRetries(
+                        this.instanceConfig.getFunctionDetails().getRetryDetails().getMaxMessageRetries());
+                pulsarSourceConfig.setDeadLetterTopic(
+                        this.instanceConfig.getFunctionDetails().getRetryDetails().getDeadLetterTopic());
             }
 
-            // Use SingleConsumerPulsarSource if possible because it will have higher performance since it is not a push source
+            // Use SingleConsumerPulsarSource if possible because it will have higher performance since it is not a
+            // push source
             // that require messages to be put into an immediate queue
             if (pulsarSourceConfig instanceof SingleConsumerPulsarSourceConfig) {
-                object = new SingleConsumerPulsarSource(this.client, (SingleConsumerPulsarSourceConfig) pulsarSourceConfig, this.properties, this.functionClassLoader);
+                object = new SingleConsumerPulsarSource(this.client,
+                        (SingleConsumerPulsarSourceConfig) pulsarSourceConfig, this.properties,
+                        this.functionClassLoader);
             } else {
-                object = new MultiConsumerPulsarSource(this.client, (MultiConsumerPulsarSourceConfig) pulsarSourceConfig, this.properties, this.functionClassLoader);
+                object =
+                        new MultiConsumerPulsarSource(this.client, (MultiConsumerPulsarSourceConfig) pulsarSourceConfig,
+                                this.properties, this.functionClassLoader);
             }
         } else {
 
@@ -984,8 +1053,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                         this.instanceClassLoader);
             } else {
                 object = Reflections.createInstance(
-                  sourceSpec.getClassName(),
-                  this.functionClassLoader);
+                        sourceSpec.getClassName(),
+                        this.functionClassLoader);
             }
         }
 
@@ -1006,7 +1075,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 this.source.open(new HashMap<>(), contextImpl);
             } else {
                 this.source.open(ObjectMapperFactory.getThreadLocal().readValue(sourceSpec.getConfigs(),
-                        new TypeReference<Map<String, Object>>() {}), contextImpl);
+                        new TypeReference<Map<String, Object>>() {
+                        }), contextImpl);
             }
             if (this.source instanceof PulsarSource) {
                 contextImpl.setInputConsumers(((PulsarSource) this.source).getInputConsumers());
@@ -1051,7 +1121,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 }
 
                 if (this.instanceConfig.getFunctionDetails().getSink().getProducerSpec() != null) {
-                    org.apache.pulsar.functions.proto.Function.ProducerSpec conf = this.instanceConfig.getFunctionDetails().getSink().getProducerSpec();
+                    org.apache.pulsar.functions.proto.Function.ProducerSpec conf =
+                            this.instanceConfig.getFunctionDetails().getSink().getProducerSpec();
                     ProducerConfig.ProducerConfigBuilder builder = ProducerConfig.builder()
                             .maxPendingMessages(conf.getMaxPendingMessages())
                             .maxPendingMessagesAcrossPartitions(conf.getMaxPendingMessagesAcrossPartitions())
@@ -1061,7 +1132,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                     pulsarSinkConfig.setProducerConfig(builder.build());
                 }
 
-                object = new PulsarSink(this.client, pulsarSinkConfig, this.properties, this.stats, this.functionClassLoader);
+                object = new PulsarSink(this.client, pulsarSinkConfig, this.properties, this.stats,
+                        this.functionClassLoader);
             }
         } else {
             object = Reflections.createInstance(
@@ -1080,17 +1152,18 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         }
         try {
             if (sinkSpec.getConfigs().isEmpty()) {
-                if (log.isDebugEnabled()){
+                if (log.isDebugEnabled()) {
                     log.debug("Opening Sink with empty hashmap with contextImpl: {} ", contextImpl.toString());
                 }
                 this.sink.open(new HashMap<>(), contextImpl);
             } else {
-                if (log.isDebugEnabled()){
+                if (log.isDebugEnabled()) {
                     log.debug("Opening Sink with SinkSpec {} and contextImpl: {} ", sinkSpec.toString(),
                             contextImpl.toString());
                 }
                 this.sink.open(ObjectMapperFactory.getThreadLocal().readValue(sinkSpec.getConfigs(),
-                        new TypeReference<Map<String, Object>>() {}), contextImpl);
+                        new TypeReference<Map<String, Object>>() {
+                        }), contextImpl);
             }
         } catch (Exception e) {
             log.error("Sink open produced uncaught exception: ", e);
@@ -1182,20 +1255,84 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         private BufferedReader functionOut;
         private BufferedOutputStream functionIn;
         private Process execProcess;
-        private boolean available;
-        public ProcessingUnit(Process process) {
-            this.execProcess = process;
+        private String[] commands;
+        private int index;
+
+        public ProcessingUnit(String[] commands, int index) throws IOException {
+            this.commands = commands;
+            this.index = index;
+            this.startProcess();
+        }
+
+        private void startProcess() throws IOException {
+            this.execProcess = Runtime.getRuntime().exec(commands);
             this.functionOut = new BufferedReader(
                     new InputStreamReader(new BufferedInputStream(execProcess.getInputStream()),
                             StandardCharsets.UTF_8));
             this.functionIn = new BufferedOutputStream(execProcess.getOutputStream());
-            this.available = true;
         }
 
-        public void run(Record<?> record) {
-            if (this.available) {
-                this.available = false;
-            }
+
+        public void recreate() throws IOException {
+            execProcess.destroyForcibly();
+            this.close();
+
+            this.startProcess();
+        }
+
+        public synchronized CompletableFuture<Pair<Integer, JavaExecutionResult>> run(Record<?> record) {
+            return CompletableFuture.supplyAsync(() -> {
+                JavaExecutionResult executionResult = new JavaExecutionResult();
+                if (execProcess != null && !execProcess.isAlive()) {
+                    try {
+                        printStderr(execProcess);
+                    } catch (IOException ignored) {
+                    }
+                    executionResult.setSystemException(
+                            new RuntimeException("Processing unit is exited with code: " + execProcess.exitValue()));
+                    return Pair.of(index, executionResult);
+                }
+
+                if (record.getMessage().isPresent()) {
+                    Message<?> msg = record.getMessage().get();
+                    try {
+                        // write the topic name too
+                        ByteBuffer buffer = ByteBuffer.allocate(2 + msg.getTopicName().length() + msg.getData().length);
+                        // topic name should be shorter than 256
+                        buffer.put((byte)msg.getTopicName().length());
+                        buffer.put(msg.getTopicName().getBytes(StandardCharsets.UTF_8));
+                        buffer.put(msg.getData());
+                        buffer.put("\n".getBytes(StandardCharsets.UTF_8));
+                        functionIn.write(buffer.array());
+                        functionIn.flush();
+                    } catch (IOException e) {
+                        executionResult.setSystemException(e);
+                        return Pair.of(index, executionResult);
+                    }
+                } else {
+                    // empty message return an empty result
+                    return Pair.of(index, executionResult);
+                }
+                String output = null;
+                try {
+                    output = functionOut.readLine();
+                } catch (IOException e) {
+                    executionResult.setSystemException(e);
+                    return Pair.of(index, executionResult);
+                }
+
+                if (output == null || output.startsWith(errorHeader)) {
+                    String errorMsg = "empty output";
+                    if (output != null) {
+                        errorMsg = output.replaceFirst(errorHeader, "");
+                    }
+                    log.error("Failed to process message: {}, error: {}", currentRecord.getRecordSequence(), errorMsg);
+                    executionResult.setUserException(new Exception(errorMsg));
+                } else {
+                    executionResult.setResult(output.getBytes(StandardCharsets.UTF_8));
+                }
+                return Pair.of(index, executionResult);
+            });
         }
 
         public void close() throws IOException {

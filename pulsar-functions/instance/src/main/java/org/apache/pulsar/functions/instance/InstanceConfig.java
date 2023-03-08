@@ -41,8 +41,10 @@ public class InstanceConfig {
     private int port;
     private String clusterName;
     // Max pending async requests per instance to avoid large number of concurrent requests.
-    // Only used in AsyncFunction. Default: 1000
+    // Only used in AsyncFunction and languages other that java. Default: 1000
     private int maxPendingAsyncRequests = 1000;
+    // Running processing units, used for languages other that java. Default: 3
+    private int processingUnitParallelism = 3;
     // Whether the pulsar admin client exposed to function context, default is disabled.
     @Getter
     private boolean exposePulsarAdminClientEnabled = false;

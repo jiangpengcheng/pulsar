@@ -300,6 +300,11 @@ public class SinkStatsManager extends ComponentStatsManager {
     }
 
     @Override
+    public void processTimeDuration(Double endTimeMs) {
+        // no-op
+    }
+
+    @Override
     public double getTotalProcessedSuccessfully() {
         return _statTotalWritten.get();
     }

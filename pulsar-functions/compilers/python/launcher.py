@@ -38,6 +38,7 @@ PULSAR_FUNCTIONS_API_ROOT = 'functions'
 
 
 def main():
+    err_file = open("/tmp/debug-python-" + str(os.getpid()), "a")
     parser = argparse.ArgumentParser(description='Pulsar Functions Python Instance')
     parser.add_argument('--tenant', required=True, help='tenant of function')
     parser.add_argument('--namespace', required=True, help='namespace of function')
@@ -118,20 +119,24 @@ def main():
                                        secrets_provider, state, stub)
 
     while True:
-        topic = stdin.buffer.readline().decode('utf-8').rstrip()
-        if not topic:
-            continue
-
-        msg = stdin.buffer.readline().rstrip()
-        if not msg:
-            continue
-
         try:
+            line = stdin.buffer.readline().rstrip()
+            topic_length = line[0]
+            topic = (line[1:topic_length+1]).decode('utf-8')
+            if not topic:
+                raise Exception("topic is not provided")
+            err_file.write("topic is " + topic + "\n")
+
+            msg = line[topic_length+1:]
+            if not msg:
+                raise Exception("payload is not provided")
+
             # deserialize the input
             if input_schemas.get(topic) is not None:
                 msg = input_schemas[topic].decode(msg)
             elif input_serdes.get(topic) is not None:
                 msg = input_serdes[topic].deserialize(msg)
+            err_file.write("msg is " + msg + "\n")
 
             if function_class is not None:
                 res = function_class.process(msg, context_impl)
@@ -143,14 +148,17 @@ def main():
                 res = output_schema.encode(res)
             elif output_serde is not None:
                 res = output_serde.serialize(res)
+            err_file.write("res is " + res.decode('utf-8') + "\n")
         except Exception as ex:
             print(traceback.format_exc(), file=stderr)
             res = ("error: %s" % str(ex)).encode('utf-8')
 
         stdout.buffer.write(res)
         stdout.buffer.write('\n'.encode('utf-8'))
+        err_file.flush()
         stdout.flush()
         stderr.flush()
+    err_file.close()
 
 
 if __name__ == '__main__':

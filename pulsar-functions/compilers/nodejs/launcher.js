@@ -19,39 +19,35 @@
 
 try {
     const main = require("main__")
+    const readline = require('readline');
     const { Buffer } = require('node:buffer')
 
-    function readUntil(buffer, byte) {
-        let result = '';
-        for (let i = 0; i < buffer.length; i++) {
-            if (buffer[i] === byte) {
-                return result;
-            }
-            result += String.fromCharCode(buffer[i]);
-        }
-        return null; // Byte not found
-    }
-
     async function actionLoop() {
-        process.stdin.resume(); // start reading from stdin
-        process.stdin.on('data', (chunk) => {
-            if (chunk.length != 0) {
-                const lines = chunk.toString().trim().split("\n")
-                let topic = lines[0]
-                let payload = lines[1]
-                let result = ''
-                try {
-                    result = main(payload)
-                } catch (err) {
-                    let message = err.message || err.toString()
-                    result = "error:" + message
-                }
-                let res = Buffer.from(result + "\n", 'utf-8')
-                process.stdout.write(res)
-                count = 0
-            }
-
+        const rl = readline.createInterface({
+            input: process.stdin,
         });
+        let flag = 0;
+        let topic = "";
+        rl.on('line', (chunk) => {
+            if (chunk.length != 0) {
+                if (flag === 0) {
+                    flag = 1
+                    topic = chunk.toString().trim()
+                } else {
+                    flag = 0
+                    let payload = chunk.toString().trim()
+                    let result = ''
+                    try {
+                        result = main(payload)
+                    } catch (err) {
+                        let message = err.message || err.toString()
+                        result = "error:" + message
+                    }
+                    let res = Buffer.from(result + "\n", 'utf-8')
+                    process.stdout.write(res)
+                }
+            }
+        })
     }
     actionLoop()
 } catch (e) {

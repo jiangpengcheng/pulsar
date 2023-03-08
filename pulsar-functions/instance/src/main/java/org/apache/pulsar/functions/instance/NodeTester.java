@@ -41,7 +41,7 @@ public class NodeTester {
         Function.FunctionDetails.Builder functionDetailsBuilder = Function.FunctionDetails.newBuilder();
 
         Function.SourceSpec.Builder sourceSpecBuilder = Function.SourceSpec.newBuilder();
-        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-node-package-serde-source", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).build());
+        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-node-package-serde-source2", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).build());
         sourceSpecBuilder.setSubscriptionType(Function.SubscriptionType.SHARED);
         sourceSpecBuilder.setSubscriptionName("test-sub");
         sourceSpecBuilder.setSubscriptionPosition(Function.SubscriptionPosition.LATEST);
@@ -49,7 +49,7 @@ public class NodeTester {
         functionDetailsBuilder.setSource(sourceSpecBuilder.build());
 
         Function.SinkSpec.Builder sinkSpecBuilder = Function.SinkSpec.newBuilder();
-        sinkSpecBuilder.setTopic("persistent://public/default/test-node-package-serde-sink");
+        sinkSpecBuilder.setTopic("persistent://public/default/test-node-package-serde-sink2");
         sinkSpecBuilder.setTypeClassName("java.lang.String");
         functionDetailsBuilder.setSink(sinkSpecBuilder.build());
 

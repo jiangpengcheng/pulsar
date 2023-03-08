@@ -362,6 +362,12 @@ public class FunctionStatsManager extends ComponentStatsManager{
     }
 
     @Override
+    public void processTimeDuration(Double endTimeMs) {
+        _statProcessLatency.observe(endTimeMs);
+        _statProcessLatency1min.observe(endTimeMs);
+    }
+
+    @Override
     public double getTotalProcessedSuccessfully() {
         return _statTotalProcessedSuccessfully.get();
     }
