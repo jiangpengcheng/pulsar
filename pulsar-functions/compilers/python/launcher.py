@@ -118,15 +118,17 @@ def main():
                                        secrets_provider, state, stub)
 
     while True:
-        topic = stdin.buffer.readline().decode('utf-8').rstrip()
-        if not topic:
-            continue
-
-        msg = stdin.buffer.readline().rstrip()
-        if not msg:
-            continue
-
         try:
+            line = stdin.buffer.readline().rstrip()
+            topic_length = line[0]
+            topic = (line[1:topic_length+1]).decode('utf-8')
+            if not topic:
+                raise Exception("topic is not provided")
+
+            msg = line[topic_length+1:]
+            if not msg:
+                raise Exception("payload is not provided")
+
             # deserialize the input
             if input_schemas.get(topic) is not None:
                 msg = input_schemas[topic].decode(msg)
