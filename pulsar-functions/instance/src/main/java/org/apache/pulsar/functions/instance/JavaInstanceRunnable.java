@@ -29,6 +29,7 @@ import com.scurrilous.circe.checksum.Crc32cIntChecksum;
 import io.grpc.Server;
 import io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
+import io.netty.channel.EventLoopGroup;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerDomainSocketChannel;
 import io.netty.channel.kqueue.KQueueEventLoopGroup;
@@ -56,6 +57,7 @@ import java.util.Random;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -156,12 +158,11 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
 
     private String functionFile;
     private Server grpcServer;
+    private EventLoopGroup group;
 
     private final int parallelism;
     private final ArrayList<ProcessingUnit> units;
-    private final LinkedBlockingQueue<AsyncProcessingRequest> pendingAsyncRequests;
-    private final AtomicBoolean processingFlag = new AtomicBoolean(false);
-    private boolean processingAttempt = false;
+    private final byte[] newLineBytes = "\n".getBytes(StandardCharsets.UTF_8);
 
     private JavaInstance javaInstance;
     @Getter
@@ -242,7 +243,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         }
         this.parallelism = parallelism1;
         this.units = new ArrayList<>(parallelism);
-        this.pendingAsyncRequests = new LinkedBlockingQueue<>(this.instanceConfig.getMaxPendingAsyncRequests());
 
         this.componentType = InstanceUtils.calculateSubjectType(instanceConfig.getFunctionDetails());
 
@@ -355,17 +355,9 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             }
             bis.close();
             br.close();
-            try {
-                EpollEventLoopGroup group = new EpollEventLoopGroup();
-                grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
-                        .channelType(EpollServerDomainSocketChannel.class)
-                        .workerEventLoopGroup(group)
-                        .bossEventLoopGroup(group)
-                        .addService(new ContextGrpcImpl(contextImpl))
-                        .build()
-                        .start();
-            } catch (Exception e) {
-                KQueueEventLoopGroup group = new KQueueEventLoopGroup();
+            String os = System.getProperty("os.name");
+            if (os.contains("Mac")) {
+                group = new KQueueEventLoopGroup();
                 grpcServer =
                         NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
                                 .channelType(KQueueServerDomainSocketChannel.class)
@@ -374,6 +366,15 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                                 .addService(new ContextGrpcImpl(contextImpl))
                                 .build()
                                 .start();
+            } else {
+                group = new EpollEventLoopGroup();
+                grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
+                        .channelType(EpollServerDomainSocketChannel.class)
+                        .workerEventLoopGroup(group)
+                        .bossEventLoopGroup(group)
+                        .addService(new ContextGrpcImpl(contextImpl))
+                        .build()
+                        .start();
             }
 
             // start executor
@@ -508,23 +509,12 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 } else {
                     // choose a processing unit randomly
                     ProcessingUnit unit = units.get(rand.nextInt(units.size()));
-                    CompletableFuture<Pair<Integer, JavaExecutionResult>> processingResult = unit.run(currentRecord);
-                    AsyncProcessingRequest request =
-                            new AsyncProcessingRequest(currentRecord, System.nanoTime(), processingResult);
-                    pendingAsyncRequests.put(request);
+                    CompletableFuture<Pair<Record<?>, JavaExecutionResult>> processingResult = unit.run(currentRecord);
 
                     processingResult.whenCompleteAsync((res, cause) -> {
-                        ProcessingUnit finishedUnit = units.get(res.getLeft());
                         try {
-                            processAsyncResults(asyncResultConsumer);
-                            // restart processing unit when there are some errors
-                            if (res.getRight().getSystemException() != null) {
-                                log.warn("Restarting processing unit: {}, error: {}", finishedUnit.index,
-                                        res.getRight().getSystemException());
-                                finishedUnit.recreate();
-                            }
+                            asyncResultConsumer.accept(res.getLeft(), res.getRight());
                         } catch (Exception e) {
-                            log.error("Failed to put processing unit: {} back to the queue", finishedUnit.index, e);
                             asyncErrorHandler.accept(e);
                         }
                     });
@@ -553,38 +543,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         }
     }
 
-    private void processAsyncResults(JavaInstanceRunnable.AsyncResultConsumer resultConsumer) throws Exception {
-        if (processingFlag.compareAndSet(false, true)) {
-            AsyncProcessingRequest asyncResult = pendingAsyncRequests.peek();
-            while (asyncResult != null && asyncResult.getProcessResult().isDone()) {
-                pendingAsyncRequests.remove(asyncResult);
-                JavaExecutionResult execResult;
-                try {
-                    execResult = asyncResult.getProcessResult().get().getRight();
-                } catch (ExecutionException e) {
-                    execResult = new JavaExecutionResult();
-                    if (e.getCause() instanceof Exception) {
-                        execResult.setUserException((Exception) e.getCause());
-                    } else {
-                        execResult.setUserException(new Exception(e.getCause()));
-                    }
-                }
-                double endTimeMs = ((double) System.nanoTime() - asyncResult.startTime) / 1.0E6D;
-                stats.processTimeDuration(endTimeMs);
-                resultConsumer.accept(asyncResult.getRecord(), execResult);
-
-                // peek the next result
-                asyncResult = pendingAsyncRequests.peek();
-            }
-            processingFlag.set(false);
-            if (processingAttempt) { // should retry
-                processingAttempt = false;
-                processAsyncResults(resultConsumer);
-            }
-        } else {
-            processingAttempt = true;
-        }
-    }
 
     private void setupStateStore() throws Exception {
         this.stateManager = new InstanceStateManager();
@@ -1280,7 +1238,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             this.startProcess();
         }
 
-        public synchronized CompletableFuture<Pair<Integer, JavaExecutionResult>> run(Record<?> record) {
+        public CompletableFuture<Pair<Record<?>, JavaExecutionResult>> run(Record<?> record) {
             return CompletableFuture.supplyAsync(() -> {
                 JavaExecutionResult executionResult = new JavaExecutionResult();
                 if (execProcess != null && !execProcess.isAlive()) {
@@ -1290,35 +1248,40 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                     }
                     executionResult.setSystemException(
                             new RuntimeException("Processing unit is exited with code: " + execProcess.exitValue()));
-                    return Pair.of(index, executionResult);
+                    return Pair.of(record, executionResult);
                 }
 
                 if (record.getMessage().isPresent()) {
                     Message<?> msg = record.getMessage().get();
                     try {
                         // write the topic name too
-                        ByteBuffer buffer = ByteBuffer.allocate(2 + msg.getTopicName().length() + msg.getData().length);
-                        // topic name should be shorter than 256
-                        buffer.put((byte)msg.getTopicName().length());
-                        buffer.put(msg.getTopicName().getBytes(StandardCharsets.UTF_8));
-                        buffer.put(msg.getData());
-                        buffer.put("\n".getBytes(StandardCharsets.UTF_8));
-                        functionIn.write(buffer.array());
+                        int topicLength = msg.getTopicName().length();
+                        int dataLength = msg.getData().length;
+                        byte[] resultArray = new byte[2 + topicLength + dataLength];
+                        resultArray[0] = (byte)topicLength;
+                        System.arraycopy(msg.getTopicName().getBytes(StandardCharsets.UTF_8), 0, resultArray, 1,topicLength);
+                        System.arraycopy(msg.getData(), 0, resultArray, 1 + topicLength, dataLength);
+                        System.arraycopy(newLineBytes, 0, resultArray, 1 + topicLength + dataLength, 1);
+                        synchronized (functionIn){
+                            functionIn.write(resultArray);
+                        }
                         functionIn.flush();
                     } catch (IOException e) {
                         executionResult.setSystemException(e);
-                        return Pair.of(index, executionResult);
+                        return Pair.of(record, executionResult);
                     }
                 } else {
                     // empty message return an empty result
-                    return Pair.of(index, executionResult);
+                    return Pair.of(record, executionResult);
                 }
                 String output = null;
                 try {
-                    output = functionOut.readLine();
+                    synchronized (functionOut) {
+                        output = functionOut.readLine();
+                    }
                 } catch (IOException e) {
                     executionResult.setSystemException(e);
-                    return Pair.of(index, executionResult);
+                    return Pair.of(record, executionResult);
                 }
 
                 if (output == null || output.startsWith(errorHeader)) {
@@ -1331,7 +1294,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 } else {
                     executionResult.setResult(output.getBytes(StandardCharsets.UTF_8));
                 }
-                return Pair.of(index, executionResult);
+                return Pair.of(record, executionResult);
             });
         }
 
