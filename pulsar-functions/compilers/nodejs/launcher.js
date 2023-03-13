@@ -21,24 +21,13 @@ try {
     const main = require("main__")
     const { Buffer } = require('node:buffer')
 
-    function readUntil(buffer, byte) {
-        let result = '';
-        for (let i = 0; i < buffer.length; i++) {
-            if (buffer[i] === byte) {
-                return result;
-            }
-            result += String.fromCharCode(buffer[i]);
-        }
-        return null; // Byte not found
-    }
-
     async function actionLoop() {
         process.stdin.resume(); // start reading from stdin
         process.stdin.on('data', (chunk) => {
             if (chunk.length != 0) {
-                const lines = chunk.toString().trim().split("\n")
-                let topic = lines[0]
-                let payload = lines[1]
+                let topicLength = chunk.readInt8()
+                let topic = chunk.slice(1, topicLength+1).toString()
+                let payload = chunk.slice(1+topicLength).toString().trim()
                 let result = ''
                 try {
                     result = main(payload)
@@ -48,7 +37,6 @@ try {
                 }
                 let res = Buffer.from(result + "\n", 'utf-8')
                 process.stdout.write(res)
-                count = 0
             }
 
         });

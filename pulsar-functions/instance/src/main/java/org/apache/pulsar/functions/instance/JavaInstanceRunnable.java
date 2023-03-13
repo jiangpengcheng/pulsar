@@ -146,6 +146,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     private BufferedReader functionOut;
     private BufferedOutputStream functionIn;
     private Process execProcess;
+    private byte[] newLineBytes = "\n".getBytes(StandardCharsets.UTF_8);
 
     private JavaInstance javaInstance;
     @Getter
@@ -330,20 +331,19 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             }
             bis.close();
             br.close();
-            try {
-                EpollEventLoopGroup group = new EpollEventLoopGroup();
+            if (System.getProperty("os.name").contains("Mac")) {
+                KQueueEventLoopGroup group = new KQueueEventLoopGroup();
                 grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
-                        .channelType(EpollServerDomainSocketChannel.class)
+                        .channelType(KQueueServerDomainSocketChannel.class)
                         .workerEventLoopGroup(group)
                         .bossEventLoopGroup(group)
                         .addService(new ContextGrpcImpl(contextImpl))
                         .build()
                         .start();
-            } catch (Exception e) {
-                new EpollEventLoopGroup();
-                KQueueEventLoopGroup group = new KQueueEventLoopGroup();
+            } else {
+                EpollEventLoopGroup group = new EpollEventLoopGroup();
                 grpcServer = NettyServerBuilder.forAddress(new DomainSocketAddress(binDir + "/context.sock"))
-                        .channelType(KQueueServerDomainSocketChannel.class)
+                        .channelType(EpollServerDomainSocketChannel.class)
                         .workerEventLoopGroup(group)
                         .bossEventLoopGroup(group)
                         .addService(new ContextGrpcImpl(contextImpl))
@@ -489,14 +489,14 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                     currentRecord.getMessage().map(msg -> {
                         try {
                             // write the topic name too
-                            ByteBuffer buffer =
-                                    ByteBuffer.allocate(2 + msg.getTopicName().length() + msg.getData().length);
-                            // topic name should be shorter than 256
-                            buffer.put((byte) msg.getTopicName().length());
-                            buffer.put(msg.getTopicName().getBytes(StandardCharsets.UTF_8));
-                            buffer.put(msg.getData());
-                            buffer.put("\n".getBytes(StandardCharsets.UTF_8));
-                            functionIn.write(buffer.array());
+                            int topicLength = msg.getTopicName().length();
+                            int dataLength = msg.getData().length;
+                            byte[] resultArray = new byte[2 + topicLength + dataLength];
+                            resultArray[0] = (byte)topicLength;
+                            System.arraycopy(msg.getTopicName().getBytes(StandardCharsets.UTF_8), 0, resultArray, 1,topicLength);
+                            System.arraycopy(msg.getData(), 0, resultArray, 1 + topicLength, dataLength);
+                            System.arraycopy(newLineBytes, 0, resultArray, 1 + topicLength + dataLength, 1);
+                            functionIn.write(resultArray);
                             functionIn.flush();
                         } catch (IOException e) {
                             throw new RuntimeException(e);
