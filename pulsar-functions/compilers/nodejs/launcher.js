@@ -20,25 +20,26 @@
 try {
     const main = require("main__")
     const { Buffer } = require('node:buffer')
+    const readline = require('readline');
 
     async function actionLoop() {
-        process.stdin.resume(); // start reading from stdin
-        process.stdin.on('data', (chunk) => {
-            if (chunk.length != 0) {
-                let topicLength = chunk.readInt8()
-                let topic = chunk.slice(1, topicLength+1).toString()
-                let payload = chunk.slice(1+topicLength).toString().trim()
-                let result = ''
-                try {
-                    result = main(payload)
-                } catch (err) {
-                    let message = err.message || err.toString()
-                    result = "error:" + message
-                }
-                let res = Buffer.from(result + "\n", 'utf-8')
-                process.stdout.write(res)
+        const rl = readline.createInterface({
+            input: process.stdin,
+        });
+        rl.on('line', (line) => {
+            let chunk = Buffer.from(line)
+            let topicLength = chunk.readInt8()
+            let topic = chunk.slice(1, topicLength+1).toString()
+            let payload = chunk.slice(1+topicLength).toString().trim()
+            let result = ''
+            try {
+                result = main(payload)
+            } catch (err) {
+                let message = err.message || err.toString()
+                result = "error:" + message
             }
-
+            let res = Buffer.from(result + "\n", 'utf-8')
+            process.stdout.write(res)
         });
     }
     actionLoop()

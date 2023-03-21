@@ -50,19 +50,24 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import lombok.Data;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.jodah.typetools.TypeResolver;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.ThreadContext;
 import org.apache.logging.log4j.core.LoggerContext;
@@ -119,6 +124,12 @@ import org.slf4j.LoggerFactory;
  */
 @Slf4j
 public class JavaInstanceRunnable implements AutoCloseable, Runnable {
+    @Data
+    public static class AsyncFuncRequest {
+        private final Record<?> record;
+        private final Long startTime;
+    }
+
     private static final String srcRoot = "action-src";
     private static final String binRoot = "action-bin";
     private static final String errorHeader = "error:";
@@ -147,6 +158,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     private BufferedOutputStream functionIn;
     private Process execProcess;
     private byte[] newLineBytes = "\n".getBytes(StandardCharsets.UTF_8);
+    private LinkedBlockingQueue<AsyncFuncRequest> pendingAsyncRequests;
+    private LinkedBlockingQueue<byte[]> buffer;
 
     private JavaInstance javaInstance;
     @Getter
@@ -400,6 +413,8 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             log.info("Starting processing unit using command: {}", StringUtils.join(list, " "));
             execProcess = Runtime.getRuntime().exec(list.toArray(commands));
             if (execProcess.isAlive()) {
+                pendingAsyncRequests = new LinkedBlockingQueue<>();
+                buffer = new LinkedBlockingQueue<>(this.instanceConfig.getMaxPendingAsyncRequests());
                 log.info("Process is alive");
                 functionOut = new BufferedReader(
                         new InputStreamReader(new BufferedInputStream(execProcess.getInputStream()),
@@ -449,6 +464,60 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             Consumer<Throwable> asyncErrorHandler = throwable -> currentThread.interrupt();
             AsyncResultConsumer asyncResultConsumer =
                     (record, javaExecutionResult) -> handleResult(record, javaExecutionResult);
+            if (functionIn != null && functionOut != null) {
+                new Thread(() -> {
+                    while (true) {
+                        try {
+                            byte[] req = buffer.take();
+                            List<byte[]> messageBatch = new ArrayList<>();
+                            messageBatch.add(req);
+                            buffer.drainTo(messageBatch);
+                            Byte[] concatenatedByteArray = messageBatch.stream()
+                                    .flatMapToInt(bytes -> IntStream.range(0, bytes.length).map(i -> bytes[i])) // flatten byte arrays to IntStream
+                                    .mapToObj(b -> (byte) b) // convert IntStream back to Stream<Byte>
+                                    .toArray(Byte[]::new);
+                            byte[] result = ArrayUtils.toPrimitive(concatenatedByteArray);
+                            functionIn.write(result);
+                            functionIn.flush();
+                        } catch (InterruptedException e) {
+                            currentThread.interrupt();
+                        } catch (IOException e) {
+                            currentThread.interrupt();
+                        }
+                    }
+                }).start();
+
+                new Thread(() -> {
+                    while (true) {
+                        try {
+                            AsyncFuncRequest request = pendingAsyncRequests.take();
+                            JavaExecutionResult executionResult = new JavaExecutionResult();
+                            String output;
+                            output = functionOut.readLine();
+                            if (output == null || output.startsWith(errorHeader)) {
+                                String errorMsg = "empty output";
+                                if (output != null) {
+                                    errorMsg = output.replaceFirst(errorHeader, "");
+                                }
+                                log.error("Failed to process message: {}, error: {}", currentRecord.getRecordSequence(),
+                                        errorMsg);
+                                executionResult.setUserException(new Exception(errorMsg));
+                            } else {
+                                executionResult.setResult(output.getBytes(StandardCharsets.UTF_8));
+                            }
+                            Long end = System.nanoTime();
+                            stats.processTimeLatency((double) (end)- request.startTime);
+                            handleResult(request.record, executionResult);
+                        } catch (InterruptedException e) {
+                            currentThread.interrupt();
+                        } catch (IOException e) {
+                            currentThread.interrupt();
+                        } catch (Exception e) {
+                            currentThread.interrupt();
+                        }
+                    }
+                }).start();
+            }
 
             while (true) {
                 currentRecord = readInput();
@@ -468,11 +537,11 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 // set last invocation time
                 stats.setLastInvocation(System.currentTimeMillis());
 
-                // start time for process latency stat
-                stats.processTimeStart();
-
                 // process the message
                 if (javaInstance != null) {
+                    // start time for process latency stat
+                    stats.processTimeStart();
+
                     addLogTopicHandler();
                     Thread.currentThread().setContextClassLoader(functionClassLoader);
                     result = javaInstance.handleMessage(
@@ -481,6 +550,16 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                             asyncResultConsumer,
                             asyncErrorHandler);
                     Thread.currentThread().setContextClassLoader(instanceClassLoader);
+
+                    // register end time
+                    stats.processTimeEnd();
+
+                    removeLogTopicHandler();
+
+                    if (result != null) {
+                        // process the synchronous results
+                        handleResult(currentRecord, result);
+                    }
                 } else {
                     if (execProcess != null && !execProcess.isAlive()) {
                         printStderr(execProcess);
@@ -496,37 +575,13 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                             System.arraycopy(msg.getTopicName().getBytes(StandardCharsets.UTF_8), 0, resultArray, 1,topicLength);
                             System.arraycopy(msg.getData(), 0, resultArray, 1 + topicLength, dataLength);
                             System.arraycopy(newLineBytes, 0, resultArray, 1 + topicLength + dataLength, 1);
-                            functionIn.write(resultArray);
-                            functionIn.flush();
-                        } catch (IOException e) {
+                            buffer.put(resultArray);
+                            pendingAsyncRequests.put(new AsyncFuncRequest(currentRecord, System.nanoTime()));
+                        } catch (InterruptedException e) {
                             throw new RuntimeException(e);
                         }
                         return null;
                     });
-                    JavaExecutionResult executionResult = new JavaExecutionResult();
-                    String output = functionOut.readLine();
-                    if (output == null || output.startsWith(errorHeader)) {
-                        String errorMsg = "empty output";
-                        if (output != null) {
-                            errorMsg = output.replaceFirst(errorHeader, "");
-                        }
-                        log.error("Failed to process message: {}, error: {}", currentRecord.getRecordSequence(),
-                                errorMsg);
-                        executionResult.setUserException(new Exception(errorMsg));
-                    } else {
-                        executionResult.setResult(output.getBytes(StandardCharsets.UTF_8));
-                        result = executionResult;
-                    }
-                }
-
-                // register end time
-                stats.processTimeEnd();
-
-                removeLogTopicHandler();
-
-                if (result != null) {
-                    // process the synchronous results
-                    handleResult(currentRecord, result);
                 }
             }
         } catch (Throwable t) {
@@ -727,6 +782,14 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 functionIn.close();
             } catch (IOException e) {
                 log.error("Failed to close function input stream", e);
+            }
+        }
+
+        if (execProcess != null && !execProcess.isAlive()) {
+            try {
+                printStderr(execProcess);
+            } catch (IOException e) {
+                log.error("Failed to print stderr of processing unit", e);
             }
         }
     }

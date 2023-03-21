@@ -299,6 +299,11 @@ public class SourceStatsManager extends ComponentStatsManager {
     }
 
     @Override
+    public void processTimeLatency(Double duration) {
+        //no-op
+    }
+
+    @Override
     public double getTotalProcessedSuccessfully() {
         return _statTotalWritten.get();
     }

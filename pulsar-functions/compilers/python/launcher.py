@@ -38,6 +38,7 @@ PULSAR_FUNCTIONS_API_ROOT = 'functions'
 
 
 def main():
+    dbgout = open('/tmp/debug.txt', 'w')
     parser = argparse.ArgumentParser(description='Pulsar Functions Python Instance')
     parser.add_argument('--tenant', required=True, help='tenant of function')
     parser.add_argument('--namespace', required=True, help='namespace of function')
@@ -120,10 +121,13 @@ def main():
     while True:
         try:
             line = stdin.buffer.readline().rstrip()
+            dbgout.write("got line: %s with %d\n" % (line, len(line)))
             topic_length = line[0]
+            dbgout.write("got topic length: %d\n" % topic_length)
             topic = (line[1:topic_length+1]).decode('utf-8')
             if not topic:
                 raise Exception("topic is not provided")
+            dbgout.write("got topic: %s\n" % topic)
 
             msg = line[topic_length+1:]
             if not msg:
@@ -134,11 +138,13 @@ def main():
                 msg = input_schemas[topic].decode(msg)
             elif input_serdes.get(topic) is not None:
                 msg = input_serdes[topic].deserialize(msg)
+            dbgout.write("decode msg: %s\n" % msg)
 
             if function_class is not None:
                 res = function_class.process(msg, context_impl)
             else:
                 res = function_pure_function.process(msg)
+            dbgout.write("process result: %s\n" % res)
 
             # serialize output to bytes
             if output_schema is not None:
@@ -151,6 +157,7 @@ def main():
 
         stdout.buffer.write(res)
         stdout.buffer.write('\n'.encode('utf-8'))
+        dbgout.flush()
         stdout.flush()
         stderr.flush()
 
