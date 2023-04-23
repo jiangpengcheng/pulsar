@@ -124,7 +124,11 @@ def main():
             dbgout.write("got line: %s with %d\n" % (line, len(line)))
             topic_length = line[0]
             dbgout.write("got topic length: %d\n" % topic_length)
-            topic = (line[1:topic_length+1]).decode('utf-8')
+            meta = (line[1:topic_length+1]).decode('utf-8').split('@')
+            if len(meta) != 2:
+                raise Exception("invalid meta data: " + meta)
+            msgId = meta[0]
+            topic = meta[1]
             if not topic:
                 raise Exception("topic is not provided")
             dbgout.write("got topic: %s\n" % topic)

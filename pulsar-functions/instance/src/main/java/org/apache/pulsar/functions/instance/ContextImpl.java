@@ -89,6 +89,7 @@ class ContextImpl implements Context, SinkContext, SourceContext, AutoCloseable 
 
     // Per Message related
     private Record<?> record;
+    private Map<String, Record<?>> records;
 
     private final ClientBuilder clientBuilder;
     private final PulsarClient client;
@@ -169,6 +170,7 @@ class ContextImpl implements Context, SinkContext, SourceContext, AutoCloseable 
         } else {
             publishProducers = new ConcurrentHashMap<>();
         }
+        records = new HashMap<>();
 
         if (config.getFunctionDetails().getUserConfig().isEmpty()) {
             userConfigs = new HashMap<>();
@@ -237,6 +239,21 @@ class ContextImpl implements Context, SinkContext, SourceContext, AutoCloseable 
 
     public void setCurrentMessageContext(Record<?> record) {
         this.record = record;
+    }
+
+    public void addRecord(String messageId, Record<?> record) {
+        records.put(messageId, record);
+    }
+
+    public void removeRecord(String messageId) {
+        records.remove(messageId);
+    }
+
+    public Optional<Record<?>> getRecord(String messageId) {
+        if (records.containsKey(messageId)) {
+            return Optional.of(records.get(messageId));
+        }
+        return Optional.empty();
     }
 
     @Override

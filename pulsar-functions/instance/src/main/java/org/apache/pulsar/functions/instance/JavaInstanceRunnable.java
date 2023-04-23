@@ -20,6 +20,7 @@
 package org.apache.pulsar.functions.instance;
 
 import static org.apache.pulsar.functions.utils.FunctionCommon.convertFromFunctionDetailsSubscriptionPosition;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.base.Preconditions;
 import com.google.protobuf.ByteString;
@@ -37,6 +38,7 @@ import io.netty.channel.unix.DomainSocketAddress;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -50,10 +52,10 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -179,6 +181,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     private final String[] metricsLabels;
 
     private InstanceCache instanceCache;
+    private ContextImpl contextImpl;
 
     private final org.apache.pulsar.functions.proto.Function.FunctionDetails.ComponentType componentType;
 
@@ -264,7 +267,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         // start the state table
         setupStateStore();
 
-        ContextImpl contextImpl = setupContext();
+        this.contextImpl = setupContext();
         // start the output producer
         setupOutput(contextImpl);
         // start the input consumer
@@ -418,7 +421,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 log.info("Process is alive");
                 functionOut = new BufferedReader(
                         new InputStreamReader(new BufferedInputStream(execProcess.getInputStream()),
-                                StandardCharsets.UTF_8));
+                                StandardCharsets.ISO_8859_1));
                 functionIn = new BufferedOutputStream(execProcess.getOutputStream());
             } else {
                 throw new RuntimeException("Unable to start process");
@@ -503,10 +506,13 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                                         errorMsg);
                                 executionResult.setUserException(new Exception(errorMsg));
                             } else {
-                                executionResult.setResult(output.getBytes(StandardCharsets.UTF_8));
+                                executionResult.setResult(output.getBytes(StandardCharsets.ISO_8859_1));
                             }
                             Long end = System.nanoTime();
                             stats.processTimeLatency((double) (end)- request.startTime);
+                            request.record.getMessage().ifPresent(msg -> {
+                                contextImpl.removeRecord(msg.getMessageId().toString());
+                            });
                             handleResult(request.record, executionResult);
                         } catch (InterruptedException e) {
                             currentThread.interrupt();
@@ -515,6 +521,14 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                         } catch (Exception e) {
                             currentThread.interrupt();
                         }
+                    }
+                }).start();
+
+                new Thread(() -> {
+                    try {
+                        printStderr(execProcess);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
                     }
                 }).start();
             }
@@ -561,20 +575,26 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                         handleResult(currentRecord, result);
                     }
                 } else {
-                    if (execProcess != null && !execProcess.isAlive()) {
-                        printStderr(execProcess);
-                        throw new RuntimeException("Processing unit is exited with code: " + execProcess.exitValue());
-                    }
                     currentRecord.getMessage().map(msg -> {
                         try {
+                            String msgId = msg.getMessageId().toString();
+                            contextImpl.addRecord(msgId, currentRecord);
+                            String meta = msgId + "@" + msg.getTopicName();
                             // write the topic name too
-                            int topicLength = msg.getTopicName().length();
-                            int dataLength = msg.getData().length;
-                            byte[] resultArray = new byte[2 + topicLength + dataLength];
-                            resultArray[0] = (byte)topicLength;
-                            System.arraycopy(msg.getTopicName().getBytes(StandardCharsets.UTF_8), 0, resultArray, 1,topicLength);
-                            System.arraycopy(msg.getData(), 0, resultArray, 1 + topicLength, dataLength);
-                            System.arraycopy(newLineBytes, 0, resultArray, 1 + topicLength + dataLength, 1);
+                            int metaLength = meta.length();
+                            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                            for (byte b: msg.getData()) {
+                                if (b != '\n') {
+                                    outputStream.write(b);
+                                }
+                            }
+                            byte[] dataBytes = outputStream.toByteArray();
+                            int dataLength = dataBytes.length;
+                            byte[] resultArray = new byte[2 + metaLength + dataLength];
+                            resultArray[0] = (byte)metaLength;
+                            System.arraycopy(meta.getBytes(StandardCharsets.UTF_8), 0, resultArray, 1, metaLength);
+                            System.arraycopy(dataBytes, 0, resultArray, 1 + metaLength, dataLength);
+                            System.arraycopy(newLineBytes, 0, resultArray, 1 + metaLength + dataLength, 1);
                             buffer.put(resultArray);
                             pendingAsyncRequests.put(new AsyncFuncRequest(currentRecord, System.nanoTime()));
                         } catch (InterruptedException e) {
@@ -785,13 +805,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             }
         }
 
-        if (execProcess != null && !execProcess.isAlive()) {
-            try {
-                printStderr(execProcess);
-            } catch (IOException e) {
-                log.error("Failed to print stderr of processing unit", e);
-            }
-        }
     }
 
     public String getStatsAsString() throws IOException {
@@ -1281,29 +1294,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             this.contextImpl = contextImpl;
         }
 
-        @Override
-        public void log(InstanceContext.LogMessage request, StreamObserver<Empty> responseObserver) {
-            switch (request.getLogLevel()) {
-                case "trace":
-                    log.trace(request.getMsg());
-                    break;
-                case "debug":
-                    log.debug(request.getMsg());
-                    break;
-                case "warn":
-                case "warning":
-                    log.warn(request.getMsg());
-                    break;
-                case "error":
-                    log.error(request.getMsg());
-                    break;
-                default:
-                    log.info(request.getMsg());
-                    break;
-            }
-            responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
-            responseObserver.onCompleted();
-        }
 
         @Override
         public void publish(InstanceContext.PulsarMessage request,
@@ -1319,24 +1309,41 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         }
 
         @Override
-        public void currentRecord(Empty request, StreamObserver<InstanceContext.Record> responseObserver) {
-            contextImpl.getCurrentRecord().getMessage().map(msg -> {
+        public void currentRecord(InstanceContext.MessageId messageId, StreamObserver<InstanceContext.Record> responseObserver) {
+            contextImpl.getRecord(messageId.getId()).flatMap(record -> record.getMessage()).map(msg -> {
                 InstanceContext.Record.Builder builder = InstanceContext.Record.newBuilder();
                 builder.setPayload(ByteString.copyFrom(msg.getData()));
+                builder.setMessageId(messageId.getId());
+                try {
+                    builder.setProperties(ObjectMapperFactory.getThreadLocal().writeValueAsString(msg.getProperties()));
+                } catch (JsonProcessingException e) {
+                    responseObserver.onError(new RuntimeException("Failed to write properties"));
+                    return msg;
+                }
+                if (msg.getKey() != null) {
+                    builder.setKey(msg.getKey());
+                }
+                builder.setTopicName(msg.getTopicName());
+                builder.setEventTimestamp((int) msg.getEventTime());
                 responseObserver.onNext(builder.build());
                 responseObserver.onCompleted();
-                return null;
+                return msg;
             }).orElseGet(() -> {
-                responseObserver.onError(new RuntimeException("No current record"));
+                responseObserver.onError(new RuntimeException("Failed to get record"));
                 return null;
             });
         }
 
         @Override
         public void recordMetrics(InstanceContext.MetricData request, StreamObserver<Empty> responseObserver) {
-            contextImpl.recordMetric(request.getMetricName(), request.getValue());
-            responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
-            responseObserver.onCompleted();
+            try {
+                contextImpl.recordMetric(request.getMetricName(), request.getValue());
+                responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+                responseObserver.onCompleted();
+            } catch (Exception e) {
+                log.error("Exception in JavaInstance doing recordMetrics", e);
+                responseObserver.onError(e);
+            }
         }
 
         @Override
@@ -1344,9 +1351,11 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             try {
                 contextImpl.seek(request.getTopicName(), request.getPartitionIndex(),
                         MessageId.fromByteArray(request.getMessageId().toByteArray()));
+                responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+                responseObserver.onCompleted();
             } catch (IOException e) {
                 log.error("Exception in JavaInstance doing seek", e);
-                throw new RuntimeException(e);
+                responseObserver.onError(e);
             }
         }
 
@@ -1354,9 +1363,11 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         public void pause(InstanceContext.Partition request, StreamObserver<Empty> responseObserver) {
             try {
                 contextImpl.pause(request.getTopicName(), request.getPartitionIndex());
+                responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+                responseObserver.onCompleted();
             } catch (PulsarClientException e) {
                 log.error("Exception in JavaInstance doing pause", e);
-                throw new RuntimeException(e);
+                responseObserver.onError(e);
             }
         }
 
@@ -1364,9 +1375,73 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         public void resume(InstanceContext.Partition request, StreamObserver<Empty> responseObserver) {
             try {
                 contextImpl.resume(request.getTopicName(), request.getPartitionIndex());
+                responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+                responseObserver.onCompleted();
             } catch (PulsarClientException e) {
                 log.error("Exception in JavaInstance doing resume", e);
-                throw new RuntimeException(e);
+                responseObserver.onError(e);
+            }
+        }
+
+        @Override
+        public void getState(InstanceContext.StateKey key, StreamObserver<InstanceContext.StateResult> responseObserver) {
+            try {
+                InstanceContext.StateResult.Builder builder = InstanceContext.StateResult.newBuilder();
+                builder.setValue(ByteString.copyFrom(contextImpl.getState(key.getKey())));
+                responseObserver.onNext(builder.build());
+                responseObserver.onCompleted();
+            } catch (Exception e) {
+                log.error("Exception in JavaInstance doing getState", e);
+                responseObserver.onError(e);
+            }
+        }
+
+        @Override
+        public void putState(InstanceContext.StateKeyValue request, StreamObserver<Empty> responseObserver) {
+            try {
+                contextImpl.putState(request.getKey(), request.getValue().asReadOnlyByteBuffer());
+                responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+                responseObserver.onCompleted();
+            } catch (Exception e) {
+                log.error("Exception in JavaInstance doing putState", e);
+                responseObserver.onError(e);
+            }
+        }
+
+        @Override
+        public void deleteState(InstanceContext.StateKey request, StreamObserver<Empty> responseObserver) {
+            try {
+                contextImpl.deleteState(request.getKey());
+                responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+                responseObserver.onCompleted();
+            } catch (Exception e) {
+                log.error("Exception in JavaInstance doing deleteState", e);
+                responseObserver.onError(e);
+            }
+        }
+
+        @Override
+        public void incrCounter(InstanceContext.IncrStateKey request, StreamObserver<Empty> responseObserver) {
+            try {
+                contextImpl.incrCounter(request.getKey(), request.getAmount());
+                responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+                responseObserver.onCompleted();
+            } catch (Exception e) {
+                log.error("Exception in JavaInstance doing incrCounter", e);
+                responseObserver.onError(e);
+            }
+        }
+
+        @Override
+        public void getCounter(InstanceContext.StateKey request, StreamObserver<InstanceContext.Counter> responseObserver) {
+            try {
+                InstanceContext.Counter .Builder builder = InstanceContext.Counter.newBuilder();
+                builder.setValue(contextImpl.getCounter(request.getKey()));
+                responseObserver.onNext(builder.build());
+                responseObserver.onCompleted();
+            } catch (Exception e) {
+                log.error("Exception in JavaInstance doing getCounter", e);
+                responseObserver.onError(e);
             }
         }
     }

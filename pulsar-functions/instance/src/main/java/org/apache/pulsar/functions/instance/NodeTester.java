@@ -39,18 +39,19 @@ public class NodeTester {
         instanceConfig.setMetricsPort(9091);
 
         Function.FunctionDetails.Builder functionDetailsBuilder = Function.FunctionDetails.newBuilder();
+        functionDetailsBuilder.setLogTopic("persistent://public/default/test-node-package-serde-log");
 
         Function.SourceSpec.Builder sourceSpecBuilder = Function.SourceSpec.newBuilder();
         sourceSpecBuilder.putInputSpecs("persistent://public/default/test-node-package-serde-source", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).build());
         sourceSpecBuilder.setSubscriptionType(Function.SubscriptionType.SHARED);
         sourceSpecBuilder.setSubscriptionName("test-sub");
         sourceSpecBuilder.setSubscriptionPosition(Function.SubscriptionPosition.LATEST);
-        sourceSpecBuilder.setTypeClassName("java.lang.String");
+        sourceSpecBuilder.setTypeClassName("String");
         functionDetailsBuilder.setSource(sourceSpecBuilder.build());
 
         Function.SinkSpec.Builder sinkSpecBuilder = Function.SinkSpec.newBuilder();
         sinkSpecBuilder.setTopic("persistent://public/default/test-node-package-serde-sink");
-        sinkSpecBuilder.setTypeClassName("java.lang.String");
+        sinkSpecBuilder.setTypeClassName("String");
         functionDetailsBuilder.setSink(sinkSpecBuilder.build());
 
         functionDetailsBuilder.setTenant("public");
@@ -75,7 +76,7 @@ public class NodeTester {
                 "exclamation.js",
                 pulsarClient,
                 null,
-                null, null, null, null, Thread.currentThread().getContextClassLoader());
+                "io.streamnative.pulsar.state.OXIAStateStoreProviderImpl", "localhost:6648", null, null, Thread.currentThread().getContextClassLoader());
         javaInstanceRunnable.run();
     }
 }
