@@ -21,6 +21,7 @@
 
 """contextimpl.py: ContextImpl class that implements the Context interface
 """
+import json
 
 import pulsar
 
@@ -46,7 +47,8 @@ class ContextImpl(pulsar.Context):
         self.state_context = state_context
         self.publish_producers = {}
         self.publish_serializers = {}
-        self.message = {}
+        self.message = None
+        self.message_id = None
         self.input_topics = input_topics
         self.output_topic = output_topic
         self.output_serde = output_serde
@@ -55,23 +57,38 @@ class ContextImpl(pulsar.Context):
         self.secrets_map = secrets_map
         self.stub = stub
 
+    def get_message(self):
+        self.message = self.stub.CurrentRecord(Context_pb2.MessageId(id=self.message_id))
+
     def get_message_id(self):
-        return self.message.get('messageId', None)
+        if self.message is None:
+            self.get_message()
+        return self.message.messageId
 
     def get_message_key(self):
-        return self.message.get('key', None)
+        if self.message is None:
+            self.get_message()
+        return self.message.key
 
     def get_message_eventtime(self):
-        return self.message.get('eventTime', None)
+        if self.message is None:
+            self.get_message()
+        return self.message.eventTimestamp
 
     def get_message_properties(self):
-        return self.message.get('properties', {})
+        if self.message is None:
+            self.get_message()
+        return json.loads(self.message.properties)
 
     def get_current_message_topic_name(self):
-        return self.message.get('topicName', None)
+        if self.message is None:
+            self.get_message()
+        return self.message.topicName
 
     def get_partition_key(self):
-        return self.message.get('partitionId', None)
+        if self.message is None:
+            self.get_message()
+        return self.message.partitionId
 
     def get_function_name(self):
         return self.name
@@ -109,11 +126,7 @@ class ContextImpl(pulsar.Context):
         return self.secrets_provider.provide_secret(secret_key, self.secrets_map[secret_key])
 
     def record_metric(self, metric_name, metric_value):
-        if metric_name not in self.user_metrics_map:
-            user_metrics_labels = self.metrics_labels + [metric_name]
-            self.user_metrics_map[metric_name] = self.user_metrics_summary.labels(*user_metrics_labels)
-
-        self.user_metrics_map[metric_name].observe(metric_value)
+        return self.stub.recordMetrics(Context_pb2.MetricData(metricName=metric_name, value=metric_value))
 
     def get_input_topics(self):
         return self.input_topics
@@ -148,22 +161,32 @@ class ContextImpl(pulsar.Context):
             self.stub.Publish(Context_pb2.PulsarMessage(topic=topic_name, payload=output_bytes))
 
     def incr_counter(self, key, amount):
-        return self.state_context.incr(key, amount)
+        return self.stub.incrCounter(Context_pb2.IncrStateKey(key=key, amount=amount))
 
     def get_counter(self, key):
-        return self.state_context.get_amount(key)
+        return self.stub.getCounter(Context_pb2.StateKey(key=key))
 
     def del_counter(self, key):
-        return self.state_context.delete(key)
+        return self.stub.deleteState(Context_pb2.StateKey(key=key))
 
     def put_state(self, key, value):
-        return self.state_context.put(key, value)
+        data = value
+        if type(input) in [int, float, complex, str]:
+            data = str(value).encode('utf-8')
+        elif type(input) == bytes:
+            data = value
+        else:
+            raise Exception("Unsupported type for state value: %s, supported: [int, float, complex, str, bytes]" % type(value))
+        return self.stub.putState(Context_pb2.StateKeyValue(key=key, value=data))
 
     def get_state(self, key):
-        return self.state_context.get_value(key)
+        return self.stub.getState(Context_pb2.StateKey(key=key))
 
     def get_pulsar_client(self):
         return None
 
     def set_current_msg(self, message):
         self.message = message
+
+    def set_message_id(self, message_id):
+        self.message_id = message_id

@@ -17,7 +17,7 @@
  * under the License.
  */
 syntax = "proto3";
-package contextproto;
+package proto;
 
 import "google/protobuf/empty.proto";
 

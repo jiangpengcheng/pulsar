@@ -45,7 +45,7 @@ try {
         { name: 'log_topic', type: String},
     ]
 
-    function require_module(path) {
+    function requireModule(path) {
         let idx = path.lastIndexOf('.')
         try {
             let filePath = path.slice(0, idx)
@@ -59,26 +59,28 @@ try {
         }
     }
 
-    function get_schema(schema_type, type_class_name, schema_properties) {
-        if (type_class_name !== undefined && type_class_name.toLowerCase() === 'string') {
+    function getSchema(schemaType, typeClassname, schemaProperties) {
+        if (typeClassname !== undefined && typeClassname.toLowerCase() === 'string') {
             return new StringSchema()
         }
-        if (schema_type === undefined || schema_type === '' || schema_type.toLowerCase() === 'bytes') {
+        if (schemaType === undefined || schemaType === '') {
+            return null
+        } else if (schemaType.toLowerCase() === 'bytes') {
             return new ByteSchema()
-        } else if (schema_type.toLowerCase() === 'string') {
+        } else if (schemaType.toLowerCase() === 'string') {
             return new StringSchema()
-        } else if (schema_type.toLowerCase() === 'json') {
+        } else if (schemaType.toLowerCase() === 'json') {
             return new JsonSchema()
-        } else if (schema_type.toLowerCase() === 'avro') {
-            const definitions = require_module(type_class_name)
+        } else if (schemaType.toLowerCase() === 'avro') {
+            const definitions = requireModule(typeClassname)
             return new AvroSchema(definitions)
         } else {
-            let schema_class = require_module(schema_type)
-            return new schema_class(schema_properties)
+            let schemaClass = requireModule(schemaType)
+            return new schemaClass(schemaProperties)
         }
     }
 
-    function setup_grpc_client() {
+    function setupGrpcClient() {
         let PROTO_PATH = __dirname + '/lib/Context.proto';
         let packageDefinition = protoLoader.loadSync(
             PROTO_PATH,
@@ -88,11 +90,11 @@ try {
                 defaults: true,
                 oneofs: true
             });
-        let protoDescriptor = grpc.loadPackageDefinition(packageDefinition).contextproto;
+        let protoDescriptor = grpc.loadPackageDefinition(packageDefinition).proto;
         return new protoDescriptor.Context('unix://' + __dirname + '/context.sock', grpc.credentials.createInsecure());
     }
 
-    function setup_log(client, options) {
+    function setupLog(client, options) {
         const GrpcAppenderModule = {
             configure: function(config, layouts) {
                 let layout = layouts.basicLayout;
@@ -124,77 +126,77 @@ try {
         const options = commandLineArgs(optionDefinitions)
 
         // set grpc client
-        let client = setup_grpc_client()
+        let client = setupGrpcClient()
         // setup log
-        setup_log(client, options)
+        setupLog(client, options)
         const logger = log4js.getLogger();
         const debugLogger = log4js.getLogger("debug");
 
         const rl = readline.createInterface({
             input: process.stdin,
         });
-        let secrets_provider_func = require('./lib/secrets_provider.js').ClearTextSecretsProvider
-        if ('secrets_provider' in options && options['secrets_provider'] !== '') {
-            if (options['secrets_provider'] === 'EnvironmentBasedSecretsProvider') {
-                secrets_provider_func = require('./lib/secrets_provider.js').EnvironmentBasedSecretsProvider
+        let secretsProviderFunc = require('./lib/secrets_provider.js').ClearTextSecretsProvider
+        if ('secrets_provider' in options && options['secretsProvider'] !== '') {
+            if (options['secretsProvider'] === 'EnvironmentBasedSecretsProvider') {
+                secretsProviderFunc = require('./lib/secrets_provider.js').EnvironmentBasedSecretsProvider
             } else {
-                secrets_provider_func = require_module(options['secrets_provider'])
+                secretsProviderFunc = requireModule(options['secretsProvider'])
             }
 
         }
-        let secrets_provider_config = {}
+        let secretsProviderConfig = {}
         if ('secrets_provider_config' in options && options['secrets_provider_config'] !== '') {
-            secrets_provider_config = JSON.parse(options['secrets_provider_config'])
+            secretsProviderConfig = JSON.parse(options['secrets_provider_config'])
         }
-        let secrets_provider = new secrets_provider_func(secrets_provider_config)
+        let secretsProvider = new secretsProviderFunc(secretsProviderConfig)
 
         let source = {}
         if ('source' in options && options['source'] !== '') {
             source = JSON.parse(options['source'])
         }
-        let topics_to_serde_class_name = {}
+        let topicsToSerdeClassname = {}
         if ('topicsToSerDeClassName' in source) {
-            topics_to_serde_class_name = source['topicsToSerDeClassName']
+            topicsToSerdeClassname = source['topicsToSerDeClassName']
         }
-        let input_spec = {}
+        let inputSpec = {}
         if ('inputSpecs' in source) {
-            input_spec = source['inputSpecs']
+            inputSpec = source['inputSpecs']
         }
-        let input_serdes = {}
-        let input_schemas = {}
-        for (const [topic, value] of Object.entries(topics_to_serde_class_name)) {
-            let serde_class_name = require("./lib/serde")
+        let inputSerdes = {}
+        let inputSchemas = {}
+        for (const [topic, value] of Object.entries(topicsToSerdeClassname)) {
+            let serdeClassname = require("./lib/serde")
             try {
-                serde_class_name = require_module(value)
+                serdeClassname = requireModule(value)
             } catch (e) {
             }
-            input_serdes[topic] = new serde_class_name()
+            inputSerdes[topic] = new serdeClassname()
         }
-        for (const [topic, value] of Object.entries(input_spec)) {
+        for (const [topic, value] of Object.entries(inputSpec)) {
             if ('serdeClassName' in value) {
-                let serde_class_name = require("./lib/serde")
+                let serdeClassname = require("./lib/serde")
                 try {
-                    serde_class_name = require_module(value['serdeClassName'])
+                    serdeClassname = requireModule(value['serdeClassName'])
                 } catch (e) {
                 }
-                input_serdes[topic] = new serde_class_name()
+                inputSerdes[topic] = new serdeClassname()
             }
-            input_schemas[topic] = get_schema(value['schemaType'], source['typeClassName'], source['schemaProperties'])
+            inputSchemas[topic] = getSchema(value['schemaType'], source['typeClassName'], source['schemaProperties'])
         }
-        debugLogger.info("input_serdes: " + JSON.stringify(input_serdes))
-        debugLogger.info("input_schemas: " + JSON.stringify(input_schemas))
+        debugLogger.info("input_serdes: " + JSON.stringify(inputSerdes))
+        debugLogger.info("input_schemas: " + JSON.stringify(inputSchemas))
 
         let sink = JSON.parse(options['sink'])
-        let output_schema = get_schema(sink["schemaType"], sink["typeClassName"], sink["schemaProperties"])
-        let output_serde_class = require("./lib/serde.js")
+        let outputSchema = getSchema(sink["schemaType"], sink["typeClassName"], sink["schemaProperties"])
+        let outputSerdeClass = require("./lib/serde.js")
         if ('serdeClassName' in sink && sink['serdeClassName'] !== '') {
-            output_serde_class = require_module(sink['serdeClassName'])
+            outputSerdeClass = requireModule(sink['serdeClassName'])
         }
-        let output_serde = new output_serde_class()
-        debugLogger.info("output_serde: " + output_serde.constructor.name)
-        debugLogger.info("output_schema: " + output_schema.constructor.name)
+        let outputSerde = new outputSerdeClass()
+        debugLogger.info("output_serde: " +  outputSerde.constructor.name)
+        debugLogger.info("output_schema: " + outputSchema.constructor.name)
 
-        const contextObj = new context(options, secrets_provider, Object.keys(input_serdes), sink['topic'], logger, client)
+        const contextObj = new context(options, secretsProvider, Object.keys(inputSerdes), sink['topic'], logger, client)
 
         rl.on('line', async (line) => {
             let chunk = Buffer.from(line, 'latin1')
@@ -211,24 +213,24 @@ try {
             try {
                 // deserialize payload
                 let payload = chunk.slice(1 + metaLength)
-                if (topic in input_schemas) {
-                    debugLogger.info("topic: " + topic + ", using schema: " + input_schemas[topic].constructor.name)
-                    payload = input_schemas[topic].decode(payload)
-                } else if (topic in input_serdes) {
-                    debugLogger.info("topic: " + topic + ", using serde: " + input_serdes[topic].constructor.name)
-                    payload = input_serdes[topic].deserialize(payload)
+                if (topic in inputSchemas && inputSchemas[topic] !== null) {
+                    debugLogger.info("topic: " + topic + ", using schema: " + inputSchemas[topic].constructor.name)
+                    payload = inputSchemas[topic].decode(payload)
+                } else if (topic in inputSerdes) {
+                    debugLogger.info("topic: " + topic + ", using serde: " + inputSerdes[topic].constructor.name)
+                    payload = inputSerdes[topic].deserialize(payload)
                 }
 
-                contextObj.set_message_id(msgId)
-                contextObj.clear_message()
+                contextObj.setMessageId(msgId)
+                contextObj.clearMessage()
                 result = main(payload, contextObj)
                 if (result instanceof Promise) {
                     result = await result
                 }
-                if (output_schema !== null) {
-                    result = output_schema.encode(result)
-                } else if (output_serde !== null) {
-                    result = output_serde.serialize(result)
+                if (outputSchema !== null) {
+                    result = outputSchema.encode(result)
+                } else if ( outputSerde !== null) {
+                    result =  outputSerde.serialize(result)
                 }
             } catch (err) {
                 let message = err.message || err.toString()
