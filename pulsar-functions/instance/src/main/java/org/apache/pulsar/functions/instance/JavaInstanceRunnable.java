@@ -404,10 +404,6 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                 list.add("--secrets_provider_config");
                 list.add(instanceConfig.getFunctionDetails().getSecretsConfig());
             }
-            if (StringUtils.isNotEmpty(stateStorageServiceUrl)) {
-                list.add("--state_storage_serviceurl");
-                list.add(stateStorageServiceUrl);
-            }
             if (StringUtils.isNotEmpty(instanceConfig.getFunctionDetails().getLogTopic())) {
                 list.add("--log_topic");
                 list.add(instanceConfig.getFunctionDetails().getLogTopic());

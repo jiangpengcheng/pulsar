@@ -23,12 +23,12 @@ import json
 import os
 import pulsar
 import sys
+from .log import DebugLogger
 from pulsar.functions import serde
 
 PULSAR_API_ROOT = 'pulsar'
 PULSAR_FUNCTIONS_API_ROOT = 'functions'
 DEFAULT_SERIALIZER = serde.IdentitySerDe()
-DEFAULT_SCHEMA = pulsar.schema.BytesSchema()
 
 
 def import_class(from_path, full_class_name):
@@ -36,12 +36,14 @@ def import_class(from_path, full_class_name):
     full_class_name = str(full_class_name)
     try:
         return import_class_from_path(from_path, full_class_name)
-    except Exception:
+    except Exception as e:
+        DebugLogger.error("Failed to import class {} from path {} with error {}".format(full_class_name, from_path, e))
         our_dir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
         api_dir = os.path.join(our_dir, PULSAR_API_ROOT, PULSAR_FUNCTIONS_API_ROOT)
         try:
             return import_class_from_path(api_dir, full_class_name)
-        except Exception:
+        except Exception as ex:
+            DebugLogger.error("Failed to import class {} from path {} with error {}".format(full_class_name, api_dir, ex))
             return None
 
 
@@ -67,10 +69,14 @@ def import_class_from_path(from_path, full_class_name):
 
 
 def get_schema(schema_type, type_class_name, schema_properties, work_dir):
+    if type_class_name is None or type_class_name == "":
+        return None
     if type_class_name.lower() == "string":
         schema = pulsar.schema.StringSchema()
-    elif schema_type == "" or schema_type is None:
-        schema = DEFAULT_SCHEMA
+    elif schema_type is None or schema_type == "":
+        return None
+    elif schema_type.lower() == "bytes":
+        schema = pulsar.schema.BytesSchema()
     elif schema_type.lower() == "string":
         schema = pulsar.schema.StringSchema()
     elif schema_type.lower() == "json":

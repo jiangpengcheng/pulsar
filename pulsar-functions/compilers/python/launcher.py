@@ -30,15 +30,13 @@ from sys import stderr
 from sys import stdin
 from sys import stdout
 
-from lib import context, Context_pb2_grpc, log, state_context, utils
+from lib import context, Context_pb2_grpc, log, utils
 
-Log = log.Log
 PULSAR_API_ROOT = 'pulsar'
 PULSAR_FUNCTIONS_API_ROOT = 'functions'
 
 
 def main():
-    dbgout = open('/tmp/debug.txt', 'w')
     parser = argparse.ArgumentParser(description='Pulsar Functions Python Instance')
     parser.add_argument('--tenant', required=True, help='tenant of function')
     parser.add_argument('--namespace', required=True, help='namespace of function')
@@ -53,15 +51,10 @@ def main():
     parser.add_argument('--secrets_provider', required=False, help='The classname of the secrets provider')
     parser.add_argument('--secrets_provider_config', required=False, help='The config that needs to be passed to '
                                                                           'secrets provider')
-    parser.add_argument('--state_storage_serviceurl', required=False, help='Managed State Storage Service Url')
     parser.add_argument('--log_topic', required=False, help='The log topic')
     args = parser.parse_args()
 
     work_dir = str(pathlib.Path(__file__).parent.resolve())
-
-    state_storage_serviceurl = None
-    if args.state_storage_serviceurl is not None:
-        state_storage_serviceurl = str(args.state_storage_serviceurl)
 
     if args.secrets_provider is not None:
         secrets_provider = utils.import_class(work_dir, str(args.secrets_provider))
@@ -97,33 +90,27 @@ def main():
     stub = Context_pb2_grpc.ContextStub(channel)
 
     if args.log_topic:
-        log_file = os.path.join(work_dir,
-                                utils.get_fully_qualified_function_name(args.tenant, args.namespace, args.name),
-                                "log-%s.log" % args.instance_id)
         log_grpc_handler = log.LogGRPCHandler(args.log_topic, stub)
         log.remove_all_handlers()
         log.add_handler(log_grpc_handler)
-        log.init_logger(logging.INFO, log_file)
+        log.init_logger(logging.INFO)
+    else:
+        log.remove_all_handlers()
+        log.add_handler(logging.StreamHandler(stderr))
+        log.init_logger(logging.INFO)
 
     user_config = json.loads(args.user_config) if args.user_config else {}
     secrets_map = json.loads(args.secrets_map) if args.secrets_map else {}
 
-    #table_ns = "%s_%s" % (args.tenant, args.namespace)
-    #table_ns = table_ns.replace("-", "_")
-    state = state_context.NullStateContext()
-    #state = state_context.create_state_context(state_storage_serviceurl, table_ns, str(args.name))
-
     context_impl = context.ContextImpl(args.tenant, args.namespace, args.name, args.function_id, args.instance_id,
                                        args.function_version, log.Log, list(input_serdes.keys()), sink['topic'],
                                        type(output_serde).__name__, work_dir, user_config, secrets_map,
-                                       secrets_provider, state, stub)
+                                       secrets_provider, stub)
 
     while True:
         try:
             line = stdin.buffer.readline().rstrip()
-            dbgout.write("got line: %s with %d\n" % (line, len(line)))
             meta_length = line[0]
-            dbgout.write("got topic length: %d\n" % meta_length)
             meta = (line[1:meta_length+1]).decode('utf-8').split('@')
             if len(meta) != 2:
                 raise Exception("invalid meta data: " + meta)
@@ -131,7 +118,6 @@ def main():
             topic = meta[1]
             if not topic:
                 raise Exception("topic is not provided")
-            dbgout.write("got topic: %s\n" % topic)
             context_impl.set_current_msg(None)
             context_impl.set_message_id(msg_id)
 
@@ -144,26 +130,24 @@ def main():
                 msg = input_schemas[topic].decode(msg)
             elif input_serdes.get(topic) is not None:
                 msg = input_serdes[topic].deserialize(msg)
-            dbgout.write("decode msg: %s\n" % msg)
 
             if function_class is not None:
                 res = function_class.process(msg, context_impl)
             else:
                 res = function_pure_function.process(msg)
-            dbgout.write("process result: %s\n" % res)
 
             # serialize output to bytes
             if output_schema is not None:
                 res = output_schema.encode(res)
             elif output_serde is not None:
                 res = output_serde.serialize(res)
+            res = res.replace(b'\n', b'')
         except Exception as ex:
-            print(traceback.format_exc(), file=stderr)
+            log.DebugLogger.error("Exception while executing function: %s" % traceback.format_exc())
             res = ("error: %s" % str(ex)).encode('utf-8')
 
         stdout.buffer.write(res)
         stdout.buffer.write('\n'.encode('utf-8'))
-        dbgout.flush()
         stdout.flush()
         stderr.flush()
 

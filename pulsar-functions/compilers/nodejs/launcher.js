@@ -41,7 +41,6 @@ try {
         { name: 'secrets_map', type: String},
         { name: 'secrets_provider', type: String},
         { name: 'secrets_provider_config', type: String},
-        { name: 'state_storage_serviceurl', type: String},
         { name: 'log_topic', type: String},
     ]
 
@@ -108,17 +107,18 @@ try {
                 };
             }
         }
-        let appenders = { debug: { type: 'file', filename: "debug.log"}}
+        let appenders = { debug: { type: 'stderr' }}
         let categories = { default: { appenders: ['debug'], level: 'info' } }
         if ('log_topic' in options && options['log_topic'] !== '') {
-            appenders = { debug: { type: 'file', filename: "debug.log"}, grpc: {type: GrpcAppenderModule}}
-            categories = { default: { appenders: ['grpc'], level: 'info' }, debug: { appenders: ['debug'], level: 'info'} }
+            appenders = { grpc: {type: GrpcAppenderModule}}
+            categories = { default: { appenders: ['grpc'], level: 'info' } }
         }
         log4js.configure({
             appenders: appenders,
             categories: categories
         })
     }
+
     process.stdin.setEncoding('latin1')
     process.stdout.setEncoding('latin1')
 
@@ -130,7 +130,6 @@ try {
         // setup log
         setupLog(client, options)
         const logger = log4js.getLogger();
-        const debugLogger = log4js.getLogger("debug");
 
         const rl = readline.createInterface({
             input: process.stdin,
@@ -183,8 +182,6 @@ try {
             }
             inputSchemas[topic] = getSchema(value['schemaType'], source['typeClassName'], source['schemaProperties'])
         }
-        debugLogger.info("input_serdes: " + JSON.stringify(inputSerdes))
-        debugLogger.info("input_schemas: " + JSON.stringify(inputSchemas))
 
         let sink = JSON.parse(options['sink'])
         let outputSchema = getSchema(sink["schemaType"], sink["typeClassName"], sink["schemaProperties"])
@@ -193,8 +190,6 @@ try {
             outputSerdeClass = requireModule(sink['serdeClassName'])
         }
         let outputSerde = new outputSerdeClass()
-        debugLogger.info("output_serde: " +  outputSerde.constructor.name)
-        debugLogger.info("output_schema: " + outputSchema.constructor.name)
 
         const contextObj = new context(options, secretsProvider, Object.keys(inputSerdes), sink['topic'], logger, client)
 
@@ -207,17 +202,14 @@ try {
             }
             let msgId = meta[0]
             let topic = meta[1]
-            debugLogger.info("topic is: " + topic)
 
             let result = ''
             try {
                 // deserialize payload
                 let payload = chunk.slice(1 + metaLength)
                 if (topic in inputSchemas && inputSchemas[topic] !== null) {
-                    debugLogger.info("topic: " + topic + ", using schema: " + inputSchemas[topic].constructor.name)
                     payload = inputSchemas[topic].decode(payload)
                 } else if (topic in inputSerdes) {
-                    debugLogger.info("topic: " + topic + ", using serde: " + inputSerdes[topic].constructor.name)
                     payload = inputSerdes[topic].deserialize(payload)
                 }
 

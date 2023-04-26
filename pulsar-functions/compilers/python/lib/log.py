@@ -24,6 +24,7 @@ import logging
 import logging.config
 import logging.handlers
 import os
+from sys import stderr
 
 from .Context_pb2 import PulsarMessage
 
@@ -31,6 +32,8 @@ from .Context_pb2 import PulsarMessage
 # pylint: disable=invalid-name
 logging.basicConfig()
 Log = logging.getLogger()
+DebugLogger = logging.getLogger("debug")
+DebugLogger.addHandler(logging.StreamHandler(stderr))
 
 # time formatter - date - time - UTC offset
 # e.g. "08/16/1988 21:30:00 +1030"
@@ -47,7 +50,7 @@ class LogGRPCHandler(logging.Handler):
 
     def emit(self, record):
         msg = self.format(record)
-        self.stub.Publish(PulsarMessage(topic=self.topic, payload=msg.encode('utf-8')))
+        self.stub.publish(PulsarMessage(topic=self.topic, payload=msg.encode('utf-8')))
 
 
 def remove_all_handlers():
@@ -65,9 +68,7 @@ def add_handler(stream_handler):
     Log.addHandler(stream_handler)
 
 
-def init_logger(level, logfile):
-    # get log file location for function instance
-    os.environ['LOG_FILE'] = logfile
+def init_logger(level):
     if level is not None:
         Log.setLevel(level)
         for h in Log.handlers:

@@ -34,8 +34,7 @@ class ContextImpl(pulsar.Context):
         pass
 
     def __init__(self, tenant, namespace, name, function_id, instance_id, function_version, logger, input_topics,
-                 output_topic, output_serde, user_code_dir, user_config, secrets_map, secrets_provider, state_context,
-                 stub):
+                 output_topic, output_serde, user_code_dir, user_config, secrets_map, secrets_provider, stub):
         self.tenant = tenant
         self.namespace = namespace
         self.name = name
@@ -44,7 +43,6 @@ class ContextImpl(pulsar.Context):
         self.function_version = function_version
         self.log = logger
         self.secrets_provider = secrets_provider
-        self.state_context = state_context
         self.publish_producers = {}
         self.publish_serializers = {}
         self.message = None
@@ -58,7 +56,8 @@ class ContextImpl(pulsar.Context):
         self.stub = stub
 
     def get_message(self):
-        self.message = self.stub.CurrentRecord(Context_pb2.MessageId(id=self.message_id))
+        self.message = self.stub.currentRecord(Context_pb2.MessageId(id=self.message_id))
+        return self.message
 
     def get_message_id(self):
         if self.message is None:
@@ -156,9 +155,9 @@ class ContextImpl(pulsar.Context):
             message_conf['properties'] = properties
 
         if message_conf:
-            self.stub.Publish(Context_pb2.PulsarMessage(topic=topic_name, payload=output_bytes, **message_conf))
+            self.stub.publish(Context_pb2.PulsarMessage(topic=topic_name, payload=output_bytes, **message_conf))
         else:
-            self.stub.Publish(Context_pb2.PulsarMessage(topic=topic_name, payload=output_bytes))
+            self.stub.publish(Context_pb2.PulsarMessage(topic=topic_name, payload=output_bytes))
 
     def incr_counter(self, key, amount):
         return self.stub.incrCounter(Context_pb2.IncrStateKey(key=key, amount=amount))

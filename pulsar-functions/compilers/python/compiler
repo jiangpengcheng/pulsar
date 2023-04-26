@@ -57,16 +57,13 @@ def virtualenv(tgt_dir):
     requirements_txt = abspath("%s/requirements.txt" % tgt_dir)
     if exists(requirements_txt):
         if not os.path.isdir(virtualenv_dir):
-            cmd = "python -m virtualenv %s >/tmp/err 2>/tmp/err" % virtualenv_dir
+            cmd = "python3 -m virtualenv %s --system-site-packages" % virtualenv_dir
             if os.system(cmd) != 0:
-                with open("/tmp/err", "r") as f:
-                    sys.stderr.write(f.read())
+                exit(1)
             else:
-                cmd = ". %s/bin/activate && python -m pip install -r %s >/tmp/err 2>/tmp/err" % (
-                    virtualenv_dir, requirements_txt)
+                cmd = ". %s/bin/activate && python3 -m pip install -r %s" % (virtualenv_dir, requirements_txt)
                 if os.system(cmd) != 0:
-                    with open("/tmp/err", "r") as f:
-                        sys.stderr.write(f.read())
+                    exit(1)
     sys.stderr.flush()
 
 

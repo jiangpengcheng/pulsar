@@ -31,7 +31,7 @@ public class PythonJsonTester {
         InstanceConfig instanceConfig = new InstanceConfig();
         instanceConfig.setInstanceId(0);
         instanceConfig.setClusterName("standalone");
-        instanceConfig.setFunctionId("test-json");
+        instanceConfig.setFunctionId("test-python-json");
         instanceConfig.setFunctionVersion("0.0.1");
 
         instanceConfig.setMaxBufferedTuples(1000);
@@ -41,25 +41,25 @@ public class PythonJsonTester {
         Function.FunctionDetails.Builder functionDetailsBuilder = Function.FunctionDetails.newBuilder();
 
         Function.SourceSpec.Builder sourceSpecBuilder = Function.SourceSpec.newBuilder();
-        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-py-package-json-source1", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).setSchemaType("json").build());
+        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-py-package-json-source", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).setSchemaType("json").build());
         sourceSpecBuilder.setSubscriptionType(Function.SubscriptionType.SHARED);
         sourceSpecBuilder.setSubscriptionName("test-json-sub");
         sourceSpecBuilder.setSubscriptionPosition(Function.SubscriptionPosition.LATEST);
-        sourceSpecBuilder.setTypeClassName("schema.Student");
+        sourceSpecBuilder.setTypeClassName("checkjson.Student");
         functionDetailsBuilder.setSource(sourceSpecBuilder.build());
 
         Function.SinkSpec.Builder sinkSpecBuilder = Function.SinkSpec.newBuilder();
-        sinkSpecBuilder.setTopic("persistent://public/default/test-py-package-json-sink1");
+        sinkSpecBuilder.setTopic("persistent://public/default/test-py-package-json-sink");
         sinkSpecBuilder.setSchemaType("json");
-        sinkSpecBuilder.setTypeClassName("schema.Person");
+        sinkSpecBuilder.setTypeClassName("checkjson.Student");
         functionDetailsBuilder.setSink(sinkSpecBuilder.build());
 
         functionDetailsBuilder.setTenant("public");
         functionDetailsBuilder.setNamespace("default");
-        functionDetailsBuilder.setName("test-py-package");
+        functionDetailsBuilder.setName("test-py-json-package");
 
         functionDetailsBuilder.setRuntime(Function.FunctionDetails.Runtime.PYTHON);
-        functionDetailsBuilder.setClassName("student");
+        functionDetailsBuilder.setClassName("checkjson");
 
         functionDetailsBuilder.setComponentType(Function.FunctionDetails.ComponentType.FUNCTION);
         instanceConfig.setFunctionDetails(functionDetailsBuilder.build());
@@ -73,7 +73,7 @@ public class PythonJsonTester {
         JavaInstanceRunnable javaInstanceRunnable = new JavaInstanceRunnable(
                 instanceConfig,
                 clientBuilder,
-                "stu.zip",
+                "checkjson.py",
                 pulsarClient,
                 null,
                 null, null, null, null, Thread.currentThread().getContextClassLoader());
