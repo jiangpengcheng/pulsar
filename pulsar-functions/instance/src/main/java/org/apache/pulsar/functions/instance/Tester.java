@@ -18,64 +18,32 @@
  */
 package org.apache.pulsar.functions.instance;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Optional;
 import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.api.ClientBuilder;
+import org.apache.pulsar.client.api.Consumer;
+import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.functions.proto.Function;
+import org.apache.commons.codec.binary.Hex;
 
 public class Tester {
     @SuppressWarnings({"checkstyle:RegexpSingleline", "checkstyle:LineLength"})
     public static void main(String[] args) throws PulsarClientException {
-        InstanceConfig instanceConfig = new InstanceConfig();
-        instanceConfig.setInstanceId(0);
-        instanceConfig.setClusterName("standalone");
-        instanceConfig.setFunctionId("test-avro0-completed");
-        instanceConfig.setFunctionVersion("0.0.1");
-
-        instanceConfig.setMaxBufferedTuples(1000);
-        instanceConfig.setPort(9090);
-        instanceConfig.setMetricsPort(9091);
-
-        Function.FunctionDetails.Builder functionDetailsBuilder = Function.FunctionDetails.newBuilder();
-
-        Function.SourceSpec.Builder sourceSpecBuilder = Function.SourceSpec.newBuilder();
-        sourceSpecBuilder.putInputSpecs("persistent://public/default/test-py-package-avro0-completed-source", Function.ConsumerSpec.newBuilder().setIsRegexPattern(false).build());
-        sourceSpecBuilder.setSubscriptionType(Function.SubscriptionType.SHARED);
-        sourceSpecBuilder.setSubscriptionName("test-avro2-sub");
-        sourceSpecBuilder.setSubscriptionPosition(Function.SubscriptionPosition.LATEST);
-        sourceSpecBuilder.setTypeClassName("string");
-        functionDetailsBuilder.setSource(sourceSpecBuilder.build());
-
-        Function.SinkSpec.Builder sinkSpecBuilder = Function.SinkSpec.newBuilder();
-        sinkSpecBuilder.setTopic("persistent://public/default/test-py-package-avro0-completed-sink");
-        sinkSpecBuilder.setTypeClassName("string");
-        functionDetailsBuilder.setSink(sinkSpecBuilder.build());
-
-        functionDetailsBuilder.setTenant("public");
-        functionDetailsBuilder.setNamespace("default");
-        functionDetailsBuilder.setName("test-py-package");
-
-        functionDetailsBuilder.setRuntime(Function.FunctionDetails.Runtime.PYTHON);
-        functionDetailsBuilder.setClassName("exclamation.ExclamationFunction");
-
-        functionDetailsBuilder.setComponentType(Function.FunctionDetails.ComponentType.FUNCTION);
-        instanceConfig.setFunctionDetails(functionDetailsBuilder.build());
-
         String pulsarServiceUrl = "pulsar://localhost:6650";
         ClientBuilder clientBuilder = InstanceUtils
                 .createPulsarClientBuilder(pulsarServiceUrl, null, Optional.empty());
         PulsarClient pulsarClient = clientBuilder.build();
-        PulsarAdmin pulsarAdmin = null;
-
-        JavaInstanceRunnable javaInstanceRunnable = new JavaInstanceRunnable(
-                instanceConfig,
-                clientBuilder,
-                "exclamation.py",
-                pulsarClient,
-                null,
-                null, null, null, null, Thread.currentThread().getContextClassLoader());
-        javaInstanceRunnable.run();
+        Consumer consumer =  pulsarClient.newConsumer().topic("persistent://public/default/echo-exported-intermediate").subscriptionName("test-avro2-sub").subscribe();
+        while (true) {
+            Message msg = consumer.receive();
+            String msgId = new String(Base64.getEncoder().encode(msg.getMessageId().toByteArray()), StandardCharsets.UTF_8);
+            System.out.println(Hex.encodeHexString(msg.getMessageId().toByteArray()));
+            System.out.println(msgId);
+            consumer.acknowledge(msg);
+        }
     }
 }
