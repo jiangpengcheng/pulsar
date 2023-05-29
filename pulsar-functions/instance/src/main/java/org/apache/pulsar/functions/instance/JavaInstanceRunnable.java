@@ -127,6 +127,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
     // provide tables for storing states
     private final String stateStorageImplClass;
     private final String stateStorageServiceUrl;
+    private final Map<String, Object> stateStorageConfig;
     private StateStoreProvider stateStoreProvider;
     private StateManager stateManager;
 
@@ -174,6 +175,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
                                 PulsarAdmin pulsarAdmin,
                                 String stateStorageImplClass,
                                 String stateStorageServiceUrl,
+                                Map<String, Object> stateStorageConfig,
                                 SecretsProvider secretsProvider,
                                 FunctionCollectorRegistry collectorRegistry,
                                 ClassLoader componentClassLoader,
@@ -184,6 +186,7 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         this.pulsarAdmin = pulsarAdmin;
         this.stateStorageImplClass = stateStorageImplClass;
         this.stateStorageServiceUrl = stateStorageServiceUrl;
+        this.stateStorageConfig = stateStorageConfig;
         this.secretsProvider = secretsProvider;
         this.componentClassLoader = componentClassLoader;
         this.functionClassLoader = transformFunctionClassLoader != null
@@ -364,7 +367,10 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
             stateStoreProvider = StateStoreProvider.NULL;
         } else {
             stateStoreProvider = getStateStoreProvider();
-            Map<String, Object> stateStoreProviderConfig = new HashMap<>();
+            Map<String, Object> stateStoreProviderConfig = stateStorageConfig;
+            if (null == stateStorageConfig) {
+                stateStoreProviderConfig = new HashMap<>();
+            }
             stateStoreProviderConfig.put(BKStateStoreProviderImpl.STATE_STORAGE_SERVICE_URL, stateStorageServiceUrl);
             stateStoreProvider.init(stateStoreProviderConfig, instanceConfig.getFunctionDetails());
 

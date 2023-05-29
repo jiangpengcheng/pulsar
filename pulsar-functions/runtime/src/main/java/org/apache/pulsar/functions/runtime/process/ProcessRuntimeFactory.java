@@ -21,6 +21,7 @@ package org.apache.pulsar.functions.runtime.process;
 import static org.apache.pulsar.functions.auth.FunctionAuthUtils.getFunctionAuthData;
 import com.google.common.annotations.VisibleForTesting;
 import java.nio.file.Paths;
+import java.util.Map;
 import java.util.Optional;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -49,7 +50,9 @@ public class ProcessRuntimeFactory implements RuntimeFactory {
 
     private String pulsarServiceUrl;
     private String pulsarWebServiceUrl;
+    private String stateStorageImplClass;
     private String stateStorageServiceUrl;
+    private Map<String, Object> stateStorageConfig;
     private boolean authenticationEnabled;
     private AuthenticationConfig authConfig;
     private String javaInstanceJarFile;
@@ -72,7 +75,9 @@ public class ProcessRuntimeFactory implements RuntimeFactory {
     @VisibleForTesting
     public ProcessRuntimeFactory(String pulsarServiceUrl,
                                  String pulsarWebServiceUrl,
+                                 String stateStorageImplClass,
                                  String stateStorageServiceUrl,
+                                 Map<String, Object> stateStorageConfig,
                                  AuthenticationConfig authConfig,
                                  String javaInstanceJarFile,
                                  String pythonInstanceFile,
@@ -84,9 +89,10 @@ public class ProcessRuntimeFactory implements RuntimeFactory {
                                  Optional<FunctionAuthProvider> functionAuthProvider,
                                  Optional<RuntimeCustomizer> runtimeCustomizer) {
 
-        initialize(pulsarServiceUrl, pulsarWebServiceUrl, stateStorageServiceUrl, authConfig, javaInstanceJarFile,
-                pythonInstanceFile, logDirectory, extraDependenciesDir, narExtractionDirectory,
-                secretsProviderConfigurator, authenticationEnabled, functionAuthProvider, runtimeCustomizer);
+        initialize(pulsarServiceUrl, pulsarWebServiceUrl, stateStorageImplClass, stateStorageServiceUrl,
+                stateStorageConfig, authConfig, javaInstanceJarFile, pythonInstanceFile, logDirectory,
+                extraDependenciesDir, narExtractionDirectory, secretsProviderConfigurator, authenticationEnabled,
+                functionAuthProvider, runtimeCustomizer);
     }
 
     @Override
@@ -101,7 +107,9 @@ public class ProcessRuntimeFactory implements RuntimeFactory {
 
         initialize(workerConfig.getPulsarServiceUrl(),
                 workerConfig.getPulsarWebServiceUrl(),
+                workerConfig.getStateStorageProviderImplementation(),
                 workerConfig.getStateStorageServiceUrl(),
+                workerConfig.getStateStorageConfig(),
                 authenticationConfig,
                 factoryConfig.getJavaInstanceJarLocation(),
                 factoryConfig.getPythonInstanceLocation(),
@@ -116,7 +124,9 @@ public class ProcessRuntimeFactory implements RuntimeFactory {
 
     private void initialize(String pulsarServiceUrl,
                             String pulsarWebServiceUrl,
+                            String stateStorageProviderImplClass,
                             String stateStorageServiceUrl,
+                            Map<String, Object> stateStoreConfig,
                             AuthenticationConfig authConfig,
                             String javaInstanceJarFile,
                             String pythonInstanceFile,
@@ -129,7 +139,9 @@ public class ProcessRuntimeFactory implements RuntimeFactory {
                             Optional<RuntimeCustomizer> runtimeCustomizer) {
         this.pulsarServiceUrl = pulsarServiceUrl;
         this.pulsarWebServiceUrl = pulsarWebServiceUrl;
+        this.stateStorageImplClass = stateStorageProviderImplClass;
         this.stateStorageServiceUrl = stateStorageServiceUrl;
+        this.stateStorageConfig = stateStoreConfig;
         this.authConfig = authConfig;
         this.secretsProviderConfigurator = secretsProviderConfigurator;
         this.javaInstanceJarFile = javaInstanceJarFile;
@@ -227,7 +239,9 @@ public class ProcessRuntimeFactory implements RuntimeFactory {
             codeFile,
             transformFunctionFile,
             pulsarServiceUrl,
+            stateStorageImplClass,
             stateStorageServiceUrl,
+            stateStorageConfig,
             authConfig,
             secretsProviderConfigurator,
             expectedHealthCheckInterval,

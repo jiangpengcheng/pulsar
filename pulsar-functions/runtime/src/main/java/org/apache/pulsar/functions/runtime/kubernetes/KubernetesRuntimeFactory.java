@@ -85,7 +85,9 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
     private Boolean installUserCodeDependencies;
     private Map<String, String> customLabels;
     private Integer expectedMetricsCollectionInterval;
+    private String stateStorageImplClass;
     private String stateStorageServiceUri;
+    private Map<String, Object> stateStorageConfig;
     private AuthenticationConfig authConfig;
     private String javaInstanceJarFile;
     private String pythonInstanceFile;
@@ -204,7 +206,9 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
                 ? workerConfig.getPulsarServiceUrl() : factoryConfig.getPulsarServiceUrl();
         this.pulsarAdminUrl = StringUtils.isEmpty(factoryConfig.getPulsarAdminUrl())
                 ? workerConfig.getPulsarWebServiceUrl() : factoryConfig.getPulsarAdminUrl();
+        this.stateStorageImplClass = workerConfig.getStateStorageProviderImplementation();
         this.stateStorageServiceUri = workerConfig.getStateStorageServiceUrl();
+        this.stateStorageConfig = workerConfig.getStateStorageConfig();
         this.authConfig = authenticationConfig;
         this.expectedMetricsCollectionInterval = factoryConfig.getExpectedMetricsCollectionInterval() == null
                 ? -1 : factoryConfig.getExpectedMetricsCollectionInterval();
@@ -331,7 +335,9 @@ public class KubernetesRuntimeFactory implements RuntimeFactory {
             originalTransformFunctionFileName,
             pulsarServiceUrl,
             pulsarAdminUrl,
+            stateStorageImplClass,
             stateStorageServiceUri,
+            stateStorageConfig,
             authConfig,
             secretsProviderConfigurator,
             expectedMetricsCollectionInterval,

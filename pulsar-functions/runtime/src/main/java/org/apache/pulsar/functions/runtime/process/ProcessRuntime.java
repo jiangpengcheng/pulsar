@@ -32,6 +32,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -84,7 +85,9 @@ class ProcessRuntime implements Runtime {
                    String codeFile,
                    String transformFunctionFile,
                    String pulsarServiceUrl,
+                   String stateStorageImplClass,
                    String stateStorageServiceUrl,
+                   Map<String, Object> stateStorageConfig,
                    AuthenticationConfig authConfig,
                    SecretsProviderConfigurator secretsProviderConfigurator,
                    Long expectedHealthCheckInterval,
@@ -102,6 +105,10 @@ class ProcessRuntime implements Runtime {
         if (secretsProviderConfigurator.getSecretsProviderConfig(instanceConfig.getFunctionDetails()) != null) {
             secretsProviderConfig = new Gson()
                     .toJson(secretsProviderConfigurator.getSecretsProviderConfig(instanceConfig.getFunctionDetails()));
+        }
+        String stateStorageProviderConfig = null;
+        if (stateStorageConfig != null) {
+            stateStorageProviderConfig = new Gson().toJson(stateStorageConfig);
         }
         switch (instanceConfig.getFunctionDetails().getRuntime()) {
             case JAVA:
@@ -136,7 +143,9 @@ class ProcessRuntime implements Runtime {
             codeFile,
             transformFunctionFile,
             pulsarServiceUrl,
+            stateStorageImplClass,
             stateStorageServiceUrl,
+            stateStorageProviderConfig,
             authConfig,
             instanceConfig.getInstanceName(),
             instanceConfig.getPort(),

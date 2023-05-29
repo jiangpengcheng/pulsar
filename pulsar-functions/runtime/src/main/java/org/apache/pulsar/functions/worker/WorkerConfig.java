@@ -331,6 +331,12 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
     private String stateStorageProviderImplementation = BKStateStoreProviderImpl.class.getName();
 
     @FieldContext(
+            category = CATEGORY_STATE,
+            doc = "A map of configs for function runtime factory."
+    )
+    private Map<String, Object> stateStorageConfig = Collections.emptyMap();
+
+    @FieldContext(
         category = CATEGORY_FUNC_RUNTIME_MNG,
         doc = "The Pulsar topic used for storing function assignment informations"
     )
