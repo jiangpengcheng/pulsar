@@ -227,7 +227,7 @@ public class ThreadRuntimeFactory implements RuntimeFactory {
             pulsarAdmin,
             stateStorageImplClass,
             storageServiceUrl,
-                stateStorageConfig,
+            stateStorageConfig,
             secretsProvider,
             collectorRegistry,
             narExtractionDirectory,
