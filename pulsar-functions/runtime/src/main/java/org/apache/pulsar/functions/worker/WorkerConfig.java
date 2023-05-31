@@ -332,7 +332,8 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
 
     @FieldContext(
             category = CATEGORY_STATE,
-            doc = "A map of configs for function runtime factory."
+            doc = "Any config the state storage provider might need. \n\nThis is passed on"
+            + " to the init method of the stateStorageProviderImplementation"
     )
     private Map<String, Object> stateStorageConfig = Collections.emptyMap();
 

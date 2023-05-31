@@ -24,6 +24,7 @@ import static org.testng.Assert.assertTrue;
 
 import com.google.common.io.MoreFiles;
 import com.google.common.io.RecursiveDeleteOption;
+import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.google.protobuf.util.JsonFormat;
 
@@ -114,6 +115,7 @@ public class ProcessRuntimeTest {
     private final String pythonInstanceFile;
     private final String pulsarServiceUrl;
     private final String stateStorageServiceUrl;
+    private final Map<String, Object> stateStorageConfig = new HashMap<>();
     private final String logDirectory;
 
     public ProcessRuntimeTest() {
@@ -121,6 +123,8 @@ public class ProcessRuntimeTest {
         this.javaInstanceJarFile = "/Users/user/JavaInstance.jar";
         this.pythonInstanceFile = "/Users/user/PythonInstance.py";
         this.pulsarServiceUrl = "pulsar://localhost:6670";
+        this.stateStorageConfig.put("config1", "value1");
+        this.stateStorageConfig.put("config2", "value2");
         this.stateStorageServiceUrl = "bk://localhost:4181";
         this.logDirectory = "Users/user/logs";
     }
@@ -148,6 +152,7 @@ public class ProcessRuntimeTest {
         WorkerConfig workerConfig = new WorkerConfig();
         workerConfig.setPulsarServiceUrl(pulsarServiceUrl);
         workerConfig.setStateStorageServiceUrl(stateStorageServiceUrl);
+        workerConfig.setStateStorageConfig(stateStorageConfig);
         workerConfig.setAuthenticationEnabled(false);
         workerConfig.setNarExtractionDirectory(narExtractionDirectory);
         if (webServiceUrl != null) {
@@ -297,7 +302,7 @@ public class ProcessRuntimeTest {
         String extraDepsEnv;
         int portArg;
         int metricsPortArg;
-        int totalArgCount = 48;
+        int totalArgCount = 52;
         if (webServiceUrl != null && config.isExposePulsarAdminClientEnabled()) {
             totalArgCount += 3;
         }
@@ -341,7 +346,9 @@ public class ProcessRuntimeTest {
                 + pulsarAdminArg
                 + " --max_buffered_tuples 1024 --port " + args.get(portArg) + " --metrics_port " + args.get(metricsPortArg)
                 + " --pending_async_requests 200"
+                + " --state_storage_impl_class org.apache.pulsar.functions.instance.state.BKStateStoreProviderImpl"
                 + " --state_storage_serviceurl " + stateStorageServiceUrl
+                + " --state_storage_config '" + new Gson().toJson(stateStorageConfig) + "'"
                 + " --expected_healthcheck_interval 30"
                 + " --secrets_provider org.apache.pulsar.functions.secretsprovider.ClearTextSecretsProvider"
                 + " --secrets_provider_config '{\"Config\":\"Value\"}'"
@@ -373,7 +380,7 @@ public class ProcessRuntimeTest {
         ProcessRuntime container = factory.createContainer(config, userJarFile, null, null, null,30l);
         List<String> args = container.getProcessArgs();
 
-        int totalArgs = 36;
+        int totalArgs = 40;
         int portArg = 23;
         int metricsPortArg = 25;
         String pythonPath = "";
@@ -390,7 +397,9 @@ public class ProcessRuntimeTest {
                 + "' --pulsar_serviceurl " + pulsarServiceUrl
                 + " --max_buffered_tuples 1024 --port " + args.get(portArg)
                 + " --metrics_port " + args.get(metricsPortArg)
+                + " --state_storage_impl_class org.apache.pulsar.functions.instance.state.BKStateStoreProviderImpl"
                 + " --state_storage_serviceurl bk://localhost:4181"
+                + " --state_storage_config '" + new Gson().toJson(stateStorageConfig) + "'"
                 + " --expected_healthcheck_interval 30"
                 + " --secrets_provider secretsprovider.ClearTextSecretsProvider"
                 + " --secrets_provider_config '{\"Config\":\"Value\"}'"

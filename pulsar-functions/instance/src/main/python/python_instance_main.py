@@ -83,7 +83,9 @@ def generate_arguments_parser():
   parser.add_argument('--install_usercode_dependencies', required=False, help='For packaged python like wheel files, do we need to install all dependencies', type=bool)
   parser.add_argument('--dependency_repository', required=False, help='For packaged python like wheel files, which repository to pull the dependencies from')
   parser.add_argument('--extra_dependency_repository', required=False, help='For packaged python like wheel files, any extra repository to pull the dependencies from')
+  parser.add_argument('--state_storage_impl_class', required=False, help='Managed State Storage Implementation Class Name')
   parser.add_argument('--state_storage_serviceurl', required=False, help='Managed State Storage Service Url')
+  parser.add_argument('--state_storage_config', required=False, help='Managed State Storage Config For Initialization')
   parser.add_argument('--cluster_name', required=False, help='The name of the cluster this instance is running on')
   parser.add_argument('--config_file', required=False, default="", help='Configuration file name', type=str)
   return parser
