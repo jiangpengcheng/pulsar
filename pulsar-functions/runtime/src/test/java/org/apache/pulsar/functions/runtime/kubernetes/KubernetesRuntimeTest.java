@@ -158,6 +158,7 @@ public class KubernetesRuntimeTest {
     private final String pulsarServiceUrl;
     private final String pulsarAdminUrl;
     private final String stateStorageServiceUrl;
+    private final Map<String, Object> stateStorageConfig = new HashMap<>();
     private final String logDirectory;
 
     public KubernetesRuntimeTest() throws Exception {
@@ -166,6 +167,8 @@ public class KubernetesRuntimeTest {
         this.javaInstanceJarFile = "/pulsar/instances/java-instance.jar";
         this.pythonInstanceFile = "/pulsar/instances/python-instance/python_instance_main.py";
         this.pulsarServiceUrl = "pulsar://localhost:6670";
+        this.stateStorageConfig.put("config1", "value1");
+        this.stateStorageConfig.put("config2", "value2");
         this.pulsarAdminUrl = "http://localhost:8080";
         this.stateStorageServiceUrl = "bk://localhost:4181";
         this.logDirectory = "logs/functions";
@@ -232,6 +235,7 @@ public class KubernetesRuntimeTest {
                 ObjectMapperFactory.getMapper().getObjectMapper().convertValue(kubernetesRuntimeFactoryConfig, Map.class));
         workerConfig.setFunctionInstanceMinResources(null);
         workerConfig.setStateStorageServiceUrl(stateStorageServiceUrl);
+        workerConfig.setStateStorageConfig(stateStorageConfig);
         workerConfig.setAuthenticationEnabled(false);
         workerConfig.setDownloadDirectory(downloadDirectory);
 
@@ -425,14 +429,14 @@ public class KubernetesRuntimeTest {
         if (null != depsDir) {
             extraDepsEnv = " -Dpulsar.functions.extra.dependencies.dir=" + depsDir;
             classpath = classpath + ":" + depsDir + "/*";
-            totalArgs = 46;
+            totalArgs = 50;
             portArg = 33;
             metricsPortArg = 35;
         } else {
             extraDepsEnv = "";
             portArg = 32;
             metricsPortArg = 34;
-            totalArgs = 45;
+            totalArgs = 49;
         }
         if (secretsAttached) {
             totalArgs += 4;
@@ -477,7 +481,9 @@ public class KubernetesRuntimeTest {
                 + pulsarAdminArg
                 + " --max_buffered_tuples 1024 --port " + args.get(portArg) + " --metrics_port " + args.get(metricsPortArg)
                 + " --pending_async_requests 200"
+                + " --state_storage_impl_class org.apache.pulsar.functions.instance.state.BKStateStoreProviderImpl"
                 + " --state_storage_serviceurl " + stateStorageServiceUrl
+                + " --state_storage_config '" + new Gson().toJson(stateStorageConfig) + "'"
                 + " --expected_healthcheck_interval -1";
         if (secretsAttached) {
             expectedArgs += " --secrets_provider org.apache.pulsar.functions.secretsprovider.ClearTextSecretsProvider"
@@ -528,13 +534,13 @@ public class KubernetesRuntimeTest {
         int configArg;
         int metricsPortArg;
         if (null == extraDepsDir) {
-            totalArgs = 37;
+            totalArgs = 41;
             portArg = 30;
             configArg = 10;
             pythonPath = "";
             metricsPortArg = 32;
         } else {
-            totalArgs = 40;
+            totalArgs = 44;
             portArg = 31;
             configArg = 11;
             metricsPortArg = 33;
@@ -560,7 +566,9 @@ public class KubernetesRuntimeTest {
                 + " --function_details '" + JsonFormat.printer().omittingInsignificantWhitespace().print(config.getFunctionDetails())
                 + "' --pulsar_serviceurl " + pulsarServiceUrl
                 + " --max_buffered_tuples 1024 --port " + args.get(portArg) + " --metrics_port " + args.get(metricsPortArg)
+                + " --state_storage_impl_class org.apache.pulsar.functions.instance.state.BKStateStoreProviderImpl"
                 + " --state_storage_serviceurl bk://localhost:4181"
+                + " --state_storage_config '" + new Gson().toJson(stateStorageConfig) + "'"
                 + " --expected_healthcheck_interval -1";
         if (secretsAttached) {
             expectedArgs += " --secrets_provider secretsprovider.ClearTextSecretsProvider"
@@ -1035,6 +1043,7 @@ public class KubernetesRuntimeTest {
                 ObjectMapperFactory.getMapper().getObjectMapper().convertValue(kubernetesRuntimeFactoryConfig, Map.class));
         workerConfig.setFunctionInstanceMinResources(null);
         workerConfig.setStateStorageServiceUrl(stateStorageServiceUrl);
+        workerConfig.setStateStorageConfig(stateStorageConfig);
         workerConfig.setAuthenticationEnabled(false);
         workerConfig.setRuntimeCustomizerConfig(runtimeCustomizerConfig);
         workerConfig.setRuntimeCustomizerClassName(manifestCustomizerClassName);
