@@ -176,7 +176,9 @@ public class KubernetesRuntime implements Runtime {
                       String originalTransformFunctionFileName,
                       String pulsarServiceUrl,
                       String pulsarAdminUrl,
+                      String stateStorageImplClass,
                       String stateStorageServiceUrl,
+                      Map<String, Object> stateStorageConfig,
                       AuthenticationConfig authConfig,
                       SecretsProviderConfigurator secretsProviderConfigurator,
                       Integer expectedMetricsCollectionInterval,
@@ -226,6 +228,10 @@ public class KubernetesRuntime implements Runtime {
             secretsProviderConfig = new Gson()
                     .toJson(secretsProviderConfigurator.getSecretsProviderConfig(instanceConfig.getFunctionDetails()));
         }
+        String stateStorageProviderConfig = null;
+        if (stateStorageConfig != null) {
+            stateStorageProviderConfig = new Gson().toJson(stateStorageConfig);
+        }
         switch (instanceConfig.getFunctionDetails().getRuntime()) {
             case JAVA:
                 logConfigFile = "kubernetes_instance_log4j2.xml";
@@ -269,7 +275,9 @@ public class KubernetesRuntime implements Runtime {
                         this.originalCodeFileName,
                         this.originalTransformFunctionFileName,
                         pulsarServiceUrl,
+                        stateStorageImplClass,
                         stateStorageServiceUrl,
+                        stateStorageProviderConfig,
                         authConfig,
                         "$" + ENV_SHARD_ID,
                         grpcPort,

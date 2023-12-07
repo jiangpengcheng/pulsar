@@ -72,7 +72,9 @@ public class RuntimeUtils {
                                           String originalCodeFileName,
                                           String originalTransformFunctionFileName,
                                           String pulsarServiceUrl,
+                                          String stateStorageImplClass,
                                           String stateStorageServiceUrl,
+                                          String stateStorageConfig,
                                           AuthenticationConfig authConfig,
                                           String shardId,
                                           Integer grpcPort,
@@ -90,7 +92,8 @@ public class RuntimeUtils {
         final List<String> cmd = getArgsBeforeCmd(instanceConfig, extraDependenciesDir);
 
         cmd.addAll(getCmd(instanceConfig, instanceFile, extraDependenciesDir, logDirectory,
-                originalCodeFileName, originalTransformFunctionFileName, pulsarServiceUrl, stateStorageServiceUrl,
+                originalCodeFileName, originalTransformFunctionFileName, pulsarServiceUrl, stateStorageImplClass,
+                stateStorageServiceUrl, stateStorageConfig,
                 authConfig, shardId, grpcPort, expectedHealthCheckInterval,
                 logConfigFile, secretsProviderClassName, secretsProviderConfig,
                 installUserCodeDependencies, pythonDependencyRepository,
@@ -303,7 +306,9 @@ public class RuntimeUtils {
                                       String originalCodeFileName,
                                       String originalTransformFunctionFileName,
                                       String pulsarServiceUrl,
+                                      String stateStorageImplClass,
                                       String stateStorageServiceUrl,
+                                      String stateStorageConfig,
                                       AuthenticationConfig authConfig,
                                       String shardId,
                                       Integer grpcPort,
@@ -484,9 +489,17 @@ public class RuntimeUtils {
         }
 
         // state storage configs
+        if (null != stateStorageImplClass) {
+            args.add("--state_storage_impl_class");
+            args.add(stateStorageImplClass);
+        }
         if (null != stateStorageServiceUrl) {
             args.add("--state_storage_serviceurl");
             args.add(stateStorageServiceUrl);
+        }
+        if (null != stateStorageConfig) {
+            args.add("--state_storage_config");
+            args.add("'" + stateStorageConfig + "'");
         }
         args.add("--expected_healthcheck_interval");
         args.add(String.valueOf(expectedHealthCheckInterval));

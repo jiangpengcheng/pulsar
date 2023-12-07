@@ -23,6 +23,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import lombok.Getter;
@@ -69,6 +70,7 @@ public class ThreadRuntime implements Runtime {
     private final PulsarAdmin pulsarAdmin;
     private final String stateStorageImplClass;
     private final String stateStorageServiceUrl;
+    private final Map<String, Object> stateStorageConfig;
     private final SecretsProvider secretsProvider;
     private final FunctionCollectorRegistry collectorRegistry;
     private final String narExtractionDirectory;
@@ -85,6 +87,7 @@ public class ThreadRuntime implements Runtime {
                   PulsarAdmin pulsarAdmin,
                   String stateStorageImplClass,
                   String stateStorageServiceUrl,
+                  Map<String, Object> stateStorageConfig,
                   SecretsProvider secretsProvider,
                   FunctionCollectorRegistry collectorRegistry,
                   String narExtractionDirectory,
@@ -104,6 +107,7 @@ public class ThreadRuntime implements Runtime {
         this.pulsarAdmin = pulsarAdmin;
         this.stateStorageImplClass = stateStorageImplClass;
         this.stateStorageServiceUrl = stateStorageServiceUrl;
+        this.stateStorageConfig = stateStorageConfig;
         this.secretsProvider = secretsProvider;
         this.collectorRegistry = collectorRegistry;
         this.narExtractionDirectory = narExtractionDirectory;
@@ -213,6 +217,7 @@ public class ThreadRuntime implements Runtime {
                 pulsarAdmin,
                 stateStorageImplClass,
                 stateStorageServiceUrl,
+                stateStorageConfig,
                 secretsProvider,
                 collectorRegistry,
                 functionClassLoader,

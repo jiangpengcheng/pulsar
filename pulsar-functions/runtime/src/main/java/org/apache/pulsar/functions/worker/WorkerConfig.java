@@ -331,6 +331,13 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
     private String stateStorageProviderImplementation = BKStateStoreProviderImpl.class.getName();
 
     @FieldContext(
+            category = CATEGORY_STATE,
+            doc = "Any config the state storage provider might need. \n\nThis is passed on"
+            + " to the init method of the stateStorageProviderImplementation"
+    )
+    private Map<String, Object> stateStorageConfig;
+
+    @FieldContext(
         category = CATEGORY_FUNC_RUNTIME_MNG,
         doc = "The Pulsar topic used for storing function assignment informations"
     )

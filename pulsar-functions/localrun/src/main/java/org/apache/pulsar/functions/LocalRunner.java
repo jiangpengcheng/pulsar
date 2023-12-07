@@ -165,6 +165,9 @@ public class LocalRunner implements AutoCloseable {
     @Parameter(names = "--stateStorageServiceUrl", description = "The URL for the state storage service "
             + "(by default Apache BookKeeper)", hidden = true)
     protected String stateStorageServiceUrl;
+    @Parameter(names = "--stateStorageConfig", description = "The Config for the state storage impl class",
+            hidden = true)
+    protected String stateStorageConfig;
     @Parameter(names = "--brokerServiceUrl", description = "The URL for the Pulsar broker", hidden = true)
     protected String brokerServiceUrl;
     @Parameter(names = "--webServiceUrl", description = "The URL for the Pulsar web service", hidden = true)
@@ -429,15 +432,22 @@ public class LocalRunner implements AutoCloseable {
                 webServiceUrl = DEFAULT_WEB_SERVICE_URL;
             }
 
+            Map<String, Object> stateStorageProviderConfig = null;
+            if (stateStorageConfig != null) {
+                stateStorageProviderConfig = (Map<String, Object>) new Gson().fromJson(stateStorageConfig, Map.class);
+            }
+
             if ((sourceConfig != null || sinkConfig != null
                     || functionConfig.getRuntime() == FunctionConfig.Runtime.JAVA)
                     && (runtimeEnv == null || runtimeEnv == RuntimeEnv.THREAD)) {
                 // By default run java functions as threads
                 startThreadedMode(functionDetails, parallelism, instanceIdOffset, serviceUrl,
-                        stateStorageServiceUrl, authConfig, userCodeFile, transformFunctionFile);
+                        stateStorageServiceUrl, stateStorageProviderConfig, authConfig, userCodeFile,
+                        transformFunctionFile);
             } else {
                 startProcessMode(functionDetails, parallelism, instanceIdOffset, serviceUrl,
-                        stateStorageServiceUrl, authConfig, userCodeFile, transformFunctionFile);
+                        stateStorageServiceUrl, stateStorageProviderConfig,  authConfig, userCodeFile,
+                        transformFunctionFile);
             }
             local.addAll(spawners);
         }
@@ -522,13 +532,16 @@ public class LocalRunner implements AutoCloseable {
 
     private void startProcessMode(org.apache.pulsar.functions.proto.Function.FunctionDetails functionDetails,
                                            int parallelism, int instanceIdOffset, String serviceUrl,
-                                           String stateStorageServiceUrl, AuthenticationConfig authConfig,
-                                           String userCodeFile, String transformFunctionFile) throws Exception {
+                                           String stateStorageServiceUrl, Map<String, Object> stateStorageConfig,
+                                           AuthenticationConfig authConfig, String userCodeFile,
+                                           String transformFunctionFile) throws Exception {
         SecretsProviderConfigurator secretsProviderConfigurator = getSecretsProviderConfigurator();
         runtimeFactory = new ProcessRuntimeFactory(
                 serviceUrl,
                 webServiceUrl,
+                stateStorageImplClass,
                 stateStorageServiceUrl,
+                stateStorageConfig,
                 authConfig,
                 null, /* java instance jar file */
                 null, /* python instance file */
@@ -605,8 +618,9 @@ public class LocalRunner implements AutoCloseable {
 
     private void startThreadedMode(org.apache.pulsar.functions.proto.Function.FunctionDetails functionDetails,
                                            int parallelism, int instanceIdOffset, String serviceUrl,
-                                           String stateStorageServiceUrl, AuthenticationConfig authConfig,
-                                           String userCodeFile, String transformFunctionFile) throws Exception {
+                                           String stateStorageServiceUrl, Map<String, Object> stateStorageConfig,
+                                           AuthenticationConfig authConfig, String userCodeFile,
+                                           String transformFunctionFile) throws Exception {
 
         if (metricsPortStart != null) {
             if (metricsPortStart < 0 || metricsPortStart > 65535) {
@@ -644,6 +658,7 @@ public class LocalRunner implements AutoCloseable {
                     serviceUrl,
                     stateStorageImplClass,
                     stateStorageServiceUrl,
+                    stateStorageConfig,
                     authConfig,
                     secretsProvider,
                     collectorRegistry, narExtractionDirectory,

@@ -19,6 +19,7 @@
 package org.apache.pulsar.functions.runtime.thread;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import java.util.Map;
 import java.util.Optional;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -61,6 +62,7 @@ public class ThreadRuntimeFactory implements RuntimeFactory {
     private PulsarAdmin pulsarAdmin;
     private String stateStorageImplClass;
     private String storageServiceUrl;
+    private Map<String, Object> stateStorageConfig;
     private SecretsProvider defaultSecretsProvider;
     private FunctionCollectorRegistry collectorRegistry;
     private String narExtractionDirectory;
@@ -78,13 +80,14 @@ public class ThreadRuntimeFactory implements RuntimeFactory {
     public ThreadRuntimeFactory(String threadGroupName, String pulsarServiceUrl,
                                 String stateStorageImplClass,
                                 String storageServiceUrl,
+                                Map<String, Object> stateStorageConfig,
                                 AuthenticationConfig authConfig, SecretsProvider secretsProvider,
                                 FunctionCollectorRegistry collectorRegistry, String narExtractionDirectory,
                                 ClassLoader rootClassLoader, boolean exposePulsarAdminClientEnabled,
                                 String pulsarWebServiceUrl) throws Exception {
         initialize(threadGroupName, Optional.empty(), pulsarServiceUrl, authConfig,
-                stateStorageImplClass, storageServiceUrl, null, secretsProvider, collectorRegistry,
-                narExtractionDirectory,
+                stateStorageImplClass, storageServiceUrl, stateStorageConfig, null,
+                secretsProvider, collectorRegistry, narExtractionDirectory,
                 rootClassLoader, exposePulsarAdminClientEnabled, pulsarWebServiceUrl, Optional.empty(),
                 Optional.empty(), null);
     }
@@ -92,20 +95,21 @@ public class ThreadRuntimeFactory implements RuntimeFactory {
     public ThreadRuntimeFactory(String threadGroupName, String pulsarServiceUrl,
                                 String stateStorageImplClass,
                                 String storageServiceUrl,
+                                Map<String, Object> stateStorageConfig,
                                 AuthenticationConfig authConfig, SecretsProvider secretsProvider,
                                 FunctionCollectorRegistry collectorRegistry, String narExtractionDirectory,
                                 ClassLoader rootClassLoader, boolean exposePulsarAdminClientEnabled,
                                 String pulsarWebServiceUrl, FunctionCacheManager fnCache) throws Exception {
         initialize(threadGroupName, Optional.empty(), pulsarServiceUrl, authConfig,
-                stateStorageImplClass, storageServiceUrl, null, secretsProvider, collectorRegistry,
-                narExtractionDirectory,
+                stateStorageImplClass, storageServiceUrl, stateStorageConfig, null,
+                secretsProvider, collectorRegistry, narExtractionDirectory,
                 rootClassLoader, exposePulsarAdminClientEnabled, pulsarWebServiceUrl, Optional.empty(),
                 Optional.empty(), fnCache);
     }
 
     private void initialize(String threadGroupName, Optional<ThreadRuntimeFactoryConfig.MemoryLimit> memoryLimit,
                             String pulsarServiceUrl, AuthenticationConfig authConfig, String stateStorageImplClass,
-                            String storageServiceUrl,
+                            String storageServiceUrl, Map<String, Object> stateStorageConfig,
                             SecretsProviderConfigurator secretsProviderConfigurator, SecretsProvider secretsProvider,
                             FunctionCollectorRegistry collectorRegistry, String narExtractionDirectory,
                             ClassLoader rootClassLoader, boolean exposePulsarAdminClientEnabled,
@@ -133,6 +137,7 @@ public class ThreadRuntimeFactory implements RuntimeFactory {
         this.pulsarClient = this.clientBuilder.build();
         this.stateStorageImplClass = stateStorageImplClass;
         this.storageServiceUrl = storageServiceUrl;
+        this.stateStorageConfig = stateStorageConfig;
         this.collectorRegistry = collectorRegistry;
         this.narExtractionDirectory = narExtractionDirectory;
         this.connectorsManager = connectorsManager;
@@ -185,9 +190,9 @@ public class ThreadRuntimeFactory implements RuntimeFactory {
         initialize(factoryConfig.getThreadGroupName(), Optional.ofNullable(factoryConfig.getPulsarClientMemoryLimit()),
                 workerConfig.getPulsarServiceUrl(), authenticationConfig,
                 workerConfig.getStateStorageProviderImplementation(),
-                workerConfig.getStateStorageServiceUrl(), secretsProviderConfigurator, null,
-                null, workerConfig.getNarExtractionDirectory(), null,
-                workerConfig.isExposeAdminClientEnabled(),
+                workerConfig.getStateStorageServiceUrl(), workerConfig.getStateStorageConfig(),
+                secretsProviderConfigurator, null, null,
+                workerConfig.getNarExtractionDirectory(), null, workerConfig.isExposeAdminClientEnabled(),
                 workerConfig.getPulsarWebServiceUrl(), Optional.of(connectorsManager), Optional.of(functionsManager),
                 null);
     }
@@ -222,6 +227,7 @@ public class ThreadRuntimeFactory implements RuntimeFactory {
             pulsarAdmin,
             stateStorageImplClass,
             storageServiceUrl,
+            stateStorageConfig,
             secretsProvider,
             collectorRegistry,
             narExtractionDirectory,

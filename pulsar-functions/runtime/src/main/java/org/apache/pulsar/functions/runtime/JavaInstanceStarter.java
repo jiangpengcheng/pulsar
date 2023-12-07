@@ -114,6 +114,10 @@ public class JavaInstanceStarter implements AutoCloseable {
     @Parameter(names = "--state_storage_serviceurl", description = "State Storage Service Url\n", required = false)
     public String stateStorageServiceUrl;
 
+    @Parameter(names = "--state_storage_config", description = "State Storage Config that need be passed to "
+            + "stateStorageImplClass\n", required = false)
+    public String stateStorageConfig;
+
     @Parameter(names = "--port", description = "Port to listen on\n", required = true)
     public int port;
 
@@ -234,9 +238,23 @@ public class JavaInstanceStarter implements AutoCloseable {
         FunctionCollectorRegistry collectorRegistry = FunctionCollectorRegistry.getDefaultImplementation();
         RuntimeUtils.registerDefaultCollectors(collectorRegistry);
 
+        Map<String, Object> stateStorageProviderConfig = null;
+        if (!StringUtils.isEmpty(stateStorageConfig)) {
+            if (stateStorageConfig.charAt(0) == '\'') {
+                stateStorageConfig = stateStorageConfig.substring(1);
+            }
+            if (stateStorageConfig.charAt(stateStorageConfig.length() - 1) == '\'') {
+                stateStorageConfig = stateStorageConfig.substring(0, stateStorageConfig.length() - 1);
+            }
+            Type type = new TypeToken<Map<String, String>>() {
+            }.getType();
+            stateStorageProviderConfig = new Gson().fromJson(stateStorageConfig, type);
+        }
+
         containerFactory = new ThreadRuntimeFactory("LocalRunnerThreadGroup", pulsarServiceUrl,
                 stateStorageImplClass,
                 stateStorageServiceUrl,
+                stateStorageProviderConfig,
                 AuthenticationConfig.builder().clientAuthenticationPlugin(clientAuthenticationPlugin)
                         .clientAuthenticationParameters(clientAuthenticationParameters).useTls(isTrue(useTls))
                         .tlsAllowInsecureConnection(isTrue(tlsAllowInsecureConnection))
