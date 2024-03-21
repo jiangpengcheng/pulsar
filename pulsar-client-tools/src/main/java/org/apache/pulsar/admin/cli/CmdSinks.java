@@ -282,7 +282,7 @@ public class CmdSinks extends CmdBase {
         protected String sinkType;
 
         @Option(names = "--cleanup-subscription", description = "Whether delete the subscription "
-                + "when sink is deleted")
+                + "when sink is deleted", arity = "1")
         protected Boolean cleanupSubscription;
 
         @Option(names = { "-i",
