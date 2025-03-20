@@ -18,11 +18,14 @@
  */
 package org.apache.pulsar.functions.source;
 
+import static org.apache.pulsar.functions.source.PulsarSource.loadRedeliveryBackoff;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertSame;
 import static org.testng.AssertJUnit.assertEquals;
 import static org.testng.AssertJUnit.assertTrue;
@@ -42,6 +45,7 @@ import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.ConsumerBuilder;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.PulsarClientException;
+import org.apache.pulsar.client.api.RedeliveryBackoff;
 import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.SubscriptionInitialPosition;
 import org.apache.pulsar.client.api.SubscriptionType;
@@ -386,4 +390,36 @@ public class PulsarSourceTest {
         Mockito.verify(consumer, Mockito.times(1)).acknowledgeAsync(message);
     }
 
+    @Test
+    public void testLoadRedeliveryBackoff(PulsarSourceConfig pulsarSourceConfig) throws Exception {
+        Map<String, String> consumerProperties = new HashMap<>();
+        // key doesn't exist
+        RedeliveryBackoff backoff = loadRedeliveryBackoff(consumerProperties, "key");
+        assertNull(backoff);
+
+        // valid json
+        consumerProperties.put("key", "{\"minDelayMs\": 1000, \"maxDelayMs\": 10000, \"multiplier\": 2.0}");
+        backoff = loadRedeliveryBackoff(consumerProperties, "key");
+        assertNotNull(backoff);
+
+        // invalid json, should use number instead of string for values
+        consumerProperties.put("key", "{\"minDelayMs\": \"1000\", \"maxDelayMs\": 10000, \"multiplier\": 2.0}");
+        backoff = loadRedeliveryBackoff(consumerProperties, "key");
+        assertNull(backoff);
+
+        // invalid json, should use number instead of string for values
+        consumerProperties.put("key", "{\"minDelayMs\": \"fail\", \"maxDelayMs\": 10000, \"multiplier\": 2.0}");
+        backoff = loadRedeliveryBackoff(consumerProperties, "key");
+        assertNull(backoff);
+
+        // invalid json
+        consumerProperties.put("key", "invalid json");
+        backoff = loadRedeliveryBackoff(consumerProperties, "key");
+        assertNull(backoff);
+
+        // null value
+        consumerProperties.put("key", null);
+        backoff = loadRedeliveryBackoff(consumerProperties, "key");
+        assertNull(backoff);
+    }
 }
