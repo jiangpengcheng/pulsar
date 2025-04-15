@@ -226,6 +226,13 @@ public abstract class NamespacesBase extends AdminResource {
                     } else {
                         topicsFuture = pulsar().getNamespaceService().getFullListOfTopics(namespaceName);
                     }
+                    // check existing functions & connectors
+                    final Map<String, List<String>> functions = pulsar().getWorkerServiceOpt().isPresent()
+                            ? pulsar().getWorkerService().listFunctionAndConnectors(
+                                    namespaceName.getTenant(), namespaceName.getLocalName())
+                            : null;
+                    boolean hasFunctions = functions != null && functions.values().stream().anyMatch(
+                            list -> list != null && !list.isEmpty());
                     return topicsFuture.thenCompose(allTopics ->
                             pulsar().getNamespaceService().getFullListOfPartitionedTopic(namespaceName)
                                     .thenCompose(allPartitionedTopics -> {
@@ -269,7 +276,7 @@ public abstract class NamespacesBase extends AdminResource {
                                     }
                                 }
                                 if (!force) {
-                                    if (hasNonSystemTopic) {
+                                    if (hasNonSystemTopic || hasFunctions) {
                                         throw new RestException(Status.CONFLICT, "Cannot delete non empty namespace");
                                     }
                                 }
@@ -283,6 +290,9 @@ public abstract class NamespacesBase extends AdminResource {
                                     });
                                 }
                                 return markDeleteFuture.thenCompose(__ ->
+                                                internalDeleteFunctionsAsync(namespaceName.getTenant(),
+                                                        namespaceName.getLocalName(), functions))
+                                        .thenCompose(ignore ->
                                                 internalDeleteTopicsAsync(allUserCreatedTopics))
                                         .thenCompose(ignore ->
                                                 internalDeletePartitionedTopicsAsync(allUserCreatedPartitionTopics))
@@ -373,6 +383,50 @@ public abstract class NamespacesBase extends AdminResource {
                             () -> namespaceResources().getPartitionedTopicResources().deletePartitionedTopicAsync(tn)));
         }
         return FutureUtil.waitForAll(futures);
+    }
+
+    private CompletableFuture<Void> internalDeleteFunctionsAsync(String tenant, String namespace,
+                                                                 Map<String, List<String>> functions) {
+        if (functions == null || functions.isEmpty()) {
+            return CompletableFuture.completedFuture(null);
+        }
+
+        PulsarAdmin admin;
+        try {
+            admin = pulsar().getAdminClient();
+        } catch (Exception ex) {
+            log.error("[{}] Get admin client error when preparing to delete topics.", clientAppId(), ex);
+            return FutureUtil.failedFuture(ex);
+        }
+        return CompletableFuture.runAsync(() -> {
+            for (String componentName: functions.keySet()) {
+                if (functions.get(componentName) == null
+                        || functions.get(componentName).isEmpty()) {
+                    continue;
+                }
+
+                switch (componentName.toLowerCase()) {
+                    case functionComponent:
+                        for (String functionName : functions.get(componentName)) {
+                            admin.functions().deleteFunctionAsync(tenant, namespace, functionName);
+                        }
+                        break;
+                    case sinkComponent:
+                        for (String sinkName : functions.get(componentName)) {
+                            admin.sinks().deleteSinkAsync(tenant, namespace, sinkName);
+                        }
+                        break;
+                    case sourceComponent:
+                        for (String sourceName : functions.get(componentName)) {
+                            admin.sources().deleteSourceAsync(tenant, namespace, sourceName);
+                        }
+                        break;
+                    default:
+                        log.warn("[{}] Unknown component type {} when deleting namespace", clientAppId(),
+                                componentName);
+                }
+            }
+        }, pulsar().getExecutor());
     }
 
     private CompletableFuture<Void> internalDeleteTopicsAsync(Set<String> topicNames) {
