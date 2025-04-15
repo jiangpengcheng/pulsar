@@ -606,6 +606,9 @@ jobs:
           - name: Upgrade
             group: UPGRADE
 
+          - name: Namespace
+            group: NAMESPACE
+
     steps:
       - name: checkout
         uses: actions/checkout@v4
