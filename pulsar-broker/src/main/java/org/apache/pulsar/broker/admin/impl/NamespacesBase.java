@@ -398,34 +398,34 @@ public abstract class NamespacesBase extends AdminResource {
             log.error("[{}] Get admin client error when preparing to delete topics.", clientAppId(), ex);
             return FutureUtil.failedFuture(ex);
         }
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
-        for (String componentName: functions.keySet()) {
-            if (functions.get(componentName) == null
-                    || functions.get(componentName).isEmpty()) {
-                continue;
-            }
+        return CompletableFuture.runAsync(() -> {
+            for (String componentName: functions.keySet()) {
+                if (functions.get(componentName) == null
+                        || functions.get(componentName).isEmpty()) {
+                    continue;
+                }
 
-            switch (componentName.toLowerCase()) {
-                case functionComponent:
-                    for (String functionName : functions.get(componentName)) {
-                        futures.add(admin.functions().deleteFunctionAsync(tenant, namespace, functionName));
-                    }
-                    break;
-                case sinkComponent:
-                    for (String sinkName : functions.get(componentName)) {
-                        futures.add(admin.sinks().deleteSinkAsync(tenant, namespace, sinkName));
-                    }
-                    break;
-                case sourceComponent:
-                    for (String sourceName : functions.get(componentName)) {
-                        futures.add(admin.sources().deleteSourceAsync(tenant, namespace, sourceName));
-                    }
-                    break;
-                default:
-                    log.warn("[{}] Unknown component type {} when deleting namespace", clientAppId(), componentName);
+                switch (componentName.toLowerCase()) {
+                    case functionComponent:
+                        for (String functionName : functions.get(componentName)) {
+                            admin.functions().deleteFunctionAsync(tenant, namespace, functionName);
+                        }
+                        break;
+                    case sinkComponent:
+                        for (String sinkName : functions.get(componentName)) {
+                            admin.sinks().deleteSinkAsync(tenant, namespace, sinkName);
+                        }
+                        break;
+                    case sourceComponent:
+                        for (String sourceName : functions.get(componentName)) {
+                            admin.sources().deleteSourceAsync(tenant, namespace, sourceName);
+                        }
+                        break;
+                    default:
+                        log.warn("[{}] Unknown component type {} when deleting namespace", clientAppId(), componentName);
+                }
             }
-        }
-        return FutureUtil.waitForAll(futures);
+        }, pulsar().getExecutor());
     }
 
     private CompletableFuture<Void> internalDeleteTopicsAsync(Set<String> topicNames) {
