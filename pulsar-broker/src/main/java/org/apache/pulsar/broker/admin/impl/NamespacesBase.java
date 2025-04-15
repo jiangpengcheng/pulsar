@@ -422,7 +422,8 @@ public abstract class NamespacesBase extends AdminResource {
                         }
                         break;
                     default:
-                        log.warn("[{}] Unknown component type {} when deleting namespace", clientAppId(), componentName);
+                        log.warn("[{}] Unknown component type {} when deleting namespace", clientAppId(),
+                                componentName);
                 }
             }
         }, pulsar().getExecutor());
