@@ -32,7 +32,7 @@ import org.apache.pulsar.tests.integration.docker.ContainerExecResult;
 import org.apache.pulsar.tests.integration.functions.PulsarFunctionsTestBase;
 import org.apache.pulsar.tests.integration.functions.utils.UploadDownloadCommandGenerator;
 import org.apache.pulsar.tests.integration.topologies.PulsarCluster;
-import org.junit.Test;
+import org.testng.annotations.Test;
 
 @Slf4j
 public class FunctionsCLITest extends PulsarFunctionsTestBase {
