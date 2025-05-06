@@ -20,16 +20,29 @@ package org.apache.pulsar.tests.integration.cli;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
+import static org.testng.Assert.fail;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pulsar.tests.integration.containers.WorkerContainer;
+import org.apache.pulsar.tests.integration.docker.ContainerExecException;
 import org.apache.pulsar.tests.integration.docker.ContainerExecResult;
 import org.apache.pulsar.tests.integration.functions.PulsarFunctionsTestBase;
 import org.apache.pulsar.tests.integration.functions.utils.UploadDownloadCommandGenerator;
 import org.apache.pulsar.tests.integration.topologies.PulsarCluster;
+import org.testng.annotations.Test;
 
 @Slf4j
 public class FunctionsCLITest extends PulsarFunctionsTestBase {
+    public static final String JAR = "/pulsar/examples/java-test-functions.jar";
+
+    @Override
+    public void setupCluster() throws Exception {
+        brokerEnvs.put("functionsWorkerEnabled", "true");
+        this.setupCluster("");
+    }
 
     //
     // Tests on uploading/downloading function packages.
@@ -87,6 +100,61 @@ public class FunctionsCLITest extends PulsarFunctionsTestBase {
         output.assertNoOutput();
     }
 
+    @Test
+    public void testConcurrentDeleteFunction() throws Exception {
+        for (int i = 0; i < 10; i++) {
+            final String function = "func-" + i;
+            pulsarCluster.runAdminCommandOnAnyBroker("functions", "create", "--tenant", "public",
+                    "--namespace", "default", "--name", function, "--className",
+                    "org.apache.pulsar.functions.api.examples.ExclamationFunction", "--inputs",
+                    "persistent://public/default/test-java-input", "--jar", JAR);
+        }
 
+        // test functions are created successfully
+        for (int i = 0; i < 10; i++) {
+            final String function = "func-" + i;
+            ContainerExecResult result = pulsarCluster.runAdminCommandOnAnyBroker(
+                    "functions",
+                    "get",
+                    "--tenant", "public",
+                    "--namespace", "default",
+                    "--name", function
+            );
 
+            assertTrue(result.getStdout().contains("\"name\": \"" + function + "\""));
+        }
+
+        // delete 10 functions concurrently
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            final String function = "func-" + i;
+            futures.add(CompletableFuture.runAsync(() -> {
+                try {
+                    pulsarCluster.runAdminCommandOnAnyBroker("functions", "delete", "--tenant", "public",
+                            "--namespace", "default", "--name", function);
+                } catch (Exception e) {
+                    log.error("Failed to delete function", e);
+                }
+            }));
+        }
+
+        CompletableFuture<Void> allOf = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+        allOf.join();
+
+        // test functions are deleted successfully
+        for (int i = 0; i < 10; i++) {
+            final String function = "func-" + i;
+            try {
+                pulsarCluster.runAdminCommandOnAnyBroker(
+                        "functions",
+                        "get",
+                        "--tenant", "public",
+                        "--namespace", "default",
+                        "--name", function);
+                fail("Command should have exited with non-zero");
+            } catch (ContainerExecException e) {
+                assertTrue(e.getResult().getStderr().contains("Reason: Function " + function + " doesn't exist"));
+            }
+        }
+    }
 }
