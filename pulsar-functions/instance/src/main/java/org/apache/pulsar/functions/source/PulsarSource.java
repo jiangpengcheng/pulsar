@@ -18,19 +18,24 @@
  */
 package org.apache.pulsar.functions.source;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.security.Security;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang.StringUtils;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.ConsumerBuilder;
 import org.apache.pulsar.client.api.DeadLetterPolicy;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.PulsarClient;
+import org.apache.pulsar.client.api.RedeliveryBackoff;
 import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.impl.MessageImpl;
+import org.apache.pulsar.client.impl.MultiplierRedeliveryBackoff;
 import org.apache.pulsar.client.impl.TopicMessageImpl;
 import org.apache.pulsar.client.impl.schema.AutoConsumeSchema;
 import org.apache.pulsar.common.functions.ConsumerConfig;
@@ -41,7 +46,9 @@ import org.apache.pulsar.functions.utils.MessagePayloadProcessorUtils;
 import org.apache.pulsar.io.core.Source;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
+@Slf4j
 public abstract class PulsarSource<T> implements Source<T> {
+    private static final ObjectMapper objectMapper = new ObjectMapper();
     protected final PulsarClient pulsarClient;
     protected final PulsarSourceConfig pulsarSourceConfig;
     protected final Map<String, String> properties;
@@ -70,6 +77,16 @@ public abstract class PulsarSource<T> implements Source<T> {
 
         if (conf.getConsumerProperties() != null && !conf.getConsumerProperties().isEmpty()) {
             cb.loadConf(new HashMap<>(conf.getConsumerProperties()));
+            RedeliveryBackoff negativeAckRedeliveryBackoff = loadRedeliveryBackoff(conf.getConsumerProperties(),
+                    "negativeAckRedeliveryBackoff");
+            if (negativeAckRedeliveryBackoff != null) {
+                cb.negativeAckRedeliveryBackoff(negativeAckRedeliveryBackoff);
+            }
+            RedeliveryBackoff ackTimeoutRedeliveryBackoff = loadRedeliveryBackoff(conf.getConsumerProperties(),
+                    "ackTimeoutRedeliveryBackoff");
+            if (ackTimeoutRedeliveryBackoff != null) {
+                cb.ackTimeoutRedeliveryBackoff(ackTimeoutRedeliveryBackoff);
+            }
         }
 
         if (conf.isRegexPattern()) {
@@ -201,5 +218,34 @@ public abstract class PulsarSource<T> implements Source<T> {
         }
         consumerConfBuilder.poolMessages(conf.isPoolMessages());
         return consumerConfBuilder.build();
+    }
+
+    static RedeliveryBackoff loadRedeliveryBackoff(Map<String, String> consumerProperties, String key) {
+        String data = consumerProperties.get(key);
+        if (StringUtils.isNotEmpty(data)) {
+            MultiplierRedeliveryBackoff.MultiplierRedeliveryBackoffBuilder builder =
+                    MultiplierRedeliveryBackoff.builder();
+            try {
+                Map<String, Number> configs = objectMapper.readValue(data, Map.class);
+
+                if (configs == null) {
+                    return builder.build();
+                }
+                if (configs.containsKey("minDelayMs")) {
+                    builder.minDelayMs(configs.get("minDelayMs").longValue());
+                }
+                if (configs.containsKey("maxDelayMs")) {
+                    builder.maxDelayMs(configs.get("maxDelayMs").longValue());
+                }
+                if (configs.containsKey("multiplier")) {
+                    builder.multiplier(configs.get("multiplier").doubleValue());
+                }
+                return builder.build();
+            } catch (Exception e) {
+                log.warn("Failed to build MultiplierRedeliveryBackoff from consumer properties {}, fallback to null",
+                        data, e);
+            }
+        }
+        return null;
     }
 }
