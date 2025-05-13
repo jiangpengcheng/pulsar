@@ -20,7 +20,7 @@ package org.apache.pulsar.broker.resources;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.base.Joiner;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import io.netty.util.concurrent.DefaultThreadFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -30,8 +30,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -54,13 +53,8 @@ public class BaseResources<T> {
     protected static final String BASE_POLICIES_PATH = "/admin/policies";
     protected static final String BASE_CLUSTERS_PATH = "/admin/clusters";
     protected static final String LOCAL_POLICIES_ROOT = "/admin/local-policies";
-    private final ExecutorService resourceExecutor = new ThreadPoolExecutor(
-            Runtime.getRuntime().availableProcessors() * 2,
-            Runtime.getRuntime().availableProcessors() * 4,
-            60L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(),
-            new ThreadFactoryBuilder().setNameFormat("base-resource-io-%d").build()
-    );
+    private final ExecutorService resourceExecutor = Executors.newCachedThreadPool(
+            new DefaultThreadFactory("base-resource-io"));
 
     @Getter
     private final MetadataStore store;
