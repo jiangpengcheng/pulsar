@@ -55,8 +55,8 @@ public class BaseResources<T> {
     protected static final String BASE_CLUSTERS_PATH = "/admin/clusters";
     protected static final String LOCAL_POLICIES_ROOT = "/admin/local-policies";
     private final ExecutorService resourceExecutor = new ThreadPoolExecutor(
-            Runtime.getRuntime().availableProcessors(),
             Runtime.getRuntime().availableProcessors() * 2,
+            Runtime.getRuntime().availableProcessors() * 4,
             60L, TimeUnit.SECONDS,
             new LinkedBlockingQueue<>(),
             new ThreadFactoryBuilder().setNameFormat("base-resource-io-%d").build()
