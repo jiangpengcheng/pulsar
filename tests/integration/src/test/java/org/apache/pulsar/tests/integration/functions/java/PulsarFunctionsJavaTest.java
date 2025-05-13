@@ -281,5 +281,4 @@ public abstract class PulsarFunctionsJavaTest extends PulsarFunctionsTest {
     public void testAvroSchemaFunctionTest() throws Exception {
         testAvroSchemaFunction(Runtime.JAVA);
     }
-
 }
