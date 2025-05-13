@@ -42,7 +42,7 @@ import org.apache.pulsar.metadata.api.MetadataStoreException;
  * Base class for all configuration resources to access configurations from metadata-store.
  *
  * @param <T>
- *            type of configuration-resources.
+ *            type of configuration-resources .
  */
 @Slf4j
 public class BaseResources<T> {
