@@ -20,6 +20,7 @@ package org.apache.pulsar.broker.resources;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.base.Joiner;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -28,6 +29,9 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -50,6 +54,13 @@ public class BaseResources<T> {
     protected static final String BASE_POLICIES_PATH = "/admin/policies";
     protected static final String BASE_CLUSTERS_PATH = "/admin/clusters";
     protected static final String LOCAL_POLICIES_ROOT = "/admin/local-policies";
+    private final ExecutorService resourceExecutor = new ThreadPoolExecutor(
+            Runtime.getRuntime().availableProcessors(),
+            Runtime.getRuntime().availableProcessors() * 2,
+            60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(),
+            new ThreadFactoryBuilder().setNameFormat("base-resource-io-%d").build()
+    );
 
     @Getter
     private final MetadataStore store;
@@ -87,7 +98,7 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<List<String>> getChildrenAsync(String path) {
-        return cache.getChildren(path);
+        return cache.getChildren(path).thenApplyAsync(childList -> childList, resourceExecutor);
     }
 
     protected CompletableFuture<List<String>> getChildrenRecursiveAsync(String path) {
@@ -99,7 +110,7 @@ public class BaseResources<T> {
 
     private void getChildrenRecursiveAsync(String path, Set<String> children, CompletableFuture<List<String>> result,
             AtomicInteger totalResults, String parent) {
-        cache.getChildren(path).thenAccept(childList -> {
+        cache.getChildren(path).thenAcceptAsync(childList -> {
             childList = childList != null ? childList : Collections.emptyList();
             if (totalResults.decrementAndGet() == 0 && childList.isEmpty()) {
                 result.complete(new ArrayList<>(children));
@@ -118,7 +129,7 @@ public class BaseResources<T> {
                 String childPath = path + "/" + child;
                 getChildrenRecursiveAsync(childPath, children, result, totalResults, child);
             }
-        });
+        }, resourceExecutor);
     }
 
     protected Optional<T> get(String path) throws MetadataStoreException {
@@ -133,14 +144,14 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Optional<T>> getAsync(String path) {
-        return cache.get(path);
+        return cache.get(path).thenApplyAsync(optional -> optional, resourceExecutor);
     }
 
     protected CompletableFuture<Optional<T>> refreshAndGetAsync(String path) {
-        return store.sync(path).thenCompose(___ -> {
+        return store.sync(path).thenComposeAsync(___ -> {
             cache.invalidate(path);
             return cache.get(path);
-        });
+        }, resourceExecutor);
     }
 
     protected void set(String path, Function<T, T> modifyFunction) throws MetadataStoreException {
@@ -155,7 +166,7 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Void> setAsync(String path, Function<T, T> modifyFunction) {
-        return cache.readModifyUpdate(path, modifyFunction).thenApply(__ -> null);
+        return cache.readModifyUpdate(path, modifyFunction).thenApplyAsync(__ -> null, resourceExecutor);
     }
 
     protected void setWithCreate(String path, Function<Optional<T>, T> createFunction) throws MetadataStoreException {
@@ -170,7 +181,7 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Void> setWithCreateAsync(String path, Function<Optional<T>, T> createFunction) {
-        return cache.readModifyUpdateOrCreate(path, createFunction).thenApply(__ -> null);
+        return cache.readModifyUpdateOrCreate(path, createFunction).thenApplyAsync(__ -> null, resourceExecutor);
     }
 
     protected void create(String path, T data) throws MetadataStoreException {
@@ -185,7 +196,7 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Void> createAsync(String path, T data) {
-        return cache.create(path, data);
+        return cache.create(path, data).thenApplyAsync(___ -> null, resourceExecutor);
     }
 
     protected void delete(String path) throws MetadataStoreException {
@@ -200,13 +211,13 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Void> deleteAsync(String path) {
-        return cache.delete(path);
+        return cache.delete(path).thenApplyAsync(___ -> null, resourceExecutor);
     }
 
     protected CompletableFuture<Void> deleteIfExistsAsync(String path) {
         log.info("Deleting path: {}", path);
         CompletableFuture<Void> future = new CompletableFuture<>();
-        cache.delete(path).whenComplete((ignore, ex) -> {
+        cache.delete(path).whenCompleteAsync((ignore, ex) -> {
             if (ex != null && ex.getCause() instanceof MetadataStoreException.NotFoundException) {
                 log.info("Path {} did not exist in metadata store", path);
                 future.complete(null);
@@ -217,7 +228,7 @@ public class BaseResources<T> {
                 log.info("Deleted path from metadata store: {}", path);
                 future.complete(null);
             }
-        });
+        }, resourceExecutor);
         return future;
     }
 
@@ -233,7 +244,7 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Boolean> existsAsync(String path) {
-        return cache.exists(path);
+        return cache.exists(path).thenApplyAsync(exists -> exists, resourceExecutor);
     }
 
     public int getOperationTimeoutSec() {
