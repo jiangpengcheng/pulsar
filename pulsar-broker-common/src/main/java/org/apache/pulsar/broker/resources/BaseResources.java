@@ -160,7 +160,7 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Void> setAsync(String path, Function<T, T> modifyFunction) {
-        return cache.readModifyUpdate(path, modifyFunction).thenApplyAsync(__ -> null, resourceExecutor);
+        return cache.readModifyUpdate(path, modifyFunction).thenApply(__ -> null);
     }
 
     protected void setWithCreate(String path, Function<Optional<T>, T> createFunction) throws MetadataStoreException {
@@ -175,7 +175,7 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Void> setWithCreateAsync(String path, Function<Optional<T>, T> createFunction) {
-        return cache.readModifyUpdateOrCreate(path, createFunction).thenApplyAsync(__ -> null, resourceExecutor);
+        return cache.readModifyUpdateOrCreate(path, createFunction).thenApply(__ -> null);
     }
 
     protected void create(String path, T data) throws MetadataStoreException {
@@ -190,7 +190,7 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Void> createAsync(String path, T data) {
-        return cache.create(path, data).thenApplyAsync(___ -> null, resourceExecutor);
+        return cache.create(path, data);
     }
 
     protected void delete(String path) throws MetadataStoreException {
@@ -205,13 +205,13 @@ public class BaseResources<T> {
     }
 
     protected CompletableFuture<Void> deleteAsync(String path) {
-        return cache.delete(path).thenApplyAsync(___ -> null, resourceExecutor);
+        return cache.delete(path);
     }
 
     protected CompletableFuture<Void> deleteIfExistsAsync(String path) {
         log.info("Deleting path: {}", path);
         CompletableFuture<Void> future = new CompletableFuture<>();
-        cache.delete(path).whenCompleteAsync((ignore, ex) -> {
+        cache.delete(path).whenComplete((ignore, ex) -> {
             if (ex != null && ex.getCause() instanceof MetadataStoreException.NotFoundException) {
                 log.info("Path {} did not exist in metadata store", path);
                 future.complete(null);
@@ -222,7 +222,7 @@ public class BaseResources<T> {
                 log.info("Deleted path from metadata store: {}", path);
                 future.complete(null);
             }
-        }, resourceExecutor);
+        });
         return future;
     }
 
