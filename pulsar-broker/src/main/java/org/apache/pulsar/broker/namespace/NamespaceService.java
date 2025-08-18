@@ -1274,13 +1274,16 @@ public class NamespaceService implements AutoCloseable {
     }
 
     public CompletableFuture<Boolean> checkTopicOwnership(TopicName topicName) {
-        // TODO: Add unit tests cover it.
+        return getBundleAsync(topicName).thenCompose(bundle -> checkBundleOwnership(topicName, bundle));
+    }
+
+    public CompletableFuture<Boolean> checkBundleOwnership(TopicName topicName, NamespaceBundle bundle) {
         if (ExtensibleLoadManagerImpl.isLoadManagerExtensionEnabled(pulsar)) {
-            return getBundleAsync(topicName)
-                    .thenCompose(bundle -> loadManager.get().checkOwnershipAsync(Optional.of(topicName), bundle));
+            // TODO: Add unit tests cover it.
+            return loadManager.get().checkOwnershipAsync(Optional.of(topicName), bundle);
+        } else {
+            return ownershipCache.checkOwnershipAsync(bundle);
         }
-        return getBundleAsync(topicName)
-                .thenCompose(ownershipCache::checkOwnershipAsync);
     }
 
     public CompletableFuture<Void> removeOwnedServiceUnitAsync(NamespaceBundle nsBundle) {
@@ -1425,6 +1428,10 @@ public class NamespaceService implements AutoCloseable {
      */
     @Deprecated
     public CompletableFuture<TopicExistsInfo> checkTopicExists(TopicName topic) {
+        // Exclude the heartbeat topic.
+        if (isHeartbeatNamespace(topic)) {
+            return CompletableFuture.completedFuture(TopicExistsInfo.newNonPartitionedTopicExists());
+        }
         // For non-persistent/persistent partitioned topic, which has metadata.
         return pulsar.getBrokerService().fetchPartitionedTopicMetadataAsync(
                         topic.isPartitioned() ? TopicName.get(topic.getPartitionedTopicName()) : topic)

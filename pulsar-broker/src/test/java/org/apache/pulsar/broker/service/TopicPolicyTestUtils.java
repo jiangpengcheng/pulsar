@@ -44,7 +44,15 @@ public class TopicPolicyTestUtils {
 
     public static TopicPolicies getTopicPolicies(TopicPoliciesService topicPoliciesService, TopicName topicName)
             throws ExecutionException, InterruptedException {
-        return topicPoliciesService.getTopicPoliciesAsync(topicName, TopicPoliciesService.GetType.DEFAULT).get()
+        return topicPoliciesService.getTopicPoliciesAsync(topicName, TopicPoliciesService.GetType.LOCAL_ONLY).get()
+                .orElse(null);
+    }
+
+    public static TopicPolicies getTopicPolicies(TopicPoliciesService topicPoliciesService, TopicName topicName,
+             boolean global) throws ExecutionException, InterruptedException {
+        TopicPoliciesService.GetType getType = global ? TopicPoliciesService.GetType.GLOBAL_ONLY
+                : TopicPoliciesService.GetType.LOCAL_ONLY;
+        return topicPoliciesService.getTopicPoliciesAsync(topicName, getType).get()
                 .orElse(null);
     }
 

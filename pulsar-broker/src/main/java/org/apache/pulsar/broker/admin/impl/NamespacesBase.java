@@ -52,8 +52,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.mledger.LedgerOffloader;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.ListUtils;
-import org.apache.commons.lang.mutable.MutableObject;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.mutable.MutableObject;
 import org.apache.pulsar.broker.PulsarServerException;
 import org.apache.pulsar.broker.admin.AdminResource;
 import org.apache.pulsar.broker.loadbalance.LeaderBroker;
@@ -436,7 +436,7 @@ public abstract class NamespacesBase extends AdminResource {
                                                             "Cluster " + replCluster + " does not exist"));
                                             URL replClusterUrl;
                                             try {
-                                                if (!config().isTlsEnabled() || !isRequestHttps()) {
+                                                if (!replClusterData.isBrokerClientTlsEnabled()) {
                                                     replClusterUrl = new URL(replClusterData.getServiceUrl());
                                                 } else if (StringUtils.isNotBlank(replClusterData.getServiceUrlTls())) {
                                                     replClusterUrl = new URL(replClusterData.getServiceUrlTls());
