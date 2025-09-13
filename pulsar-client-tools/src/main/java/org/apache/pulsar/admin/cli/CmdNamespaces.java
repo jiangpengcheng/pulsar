@@ -207,7 +207,8 @@ public class CmdNamespaces extends CmdBase {
         private String namespaceName;
 
         @Option(names = { "-f",
-                "--force" }, description = "Delete namespace forcefully by force deleting all topics under it")
+                "--force" }, description = "Delete namespace forcefully by force deleting all topics, functions and"
+                + "connectors under it")
         private boolean force = false;
 
         @Override
