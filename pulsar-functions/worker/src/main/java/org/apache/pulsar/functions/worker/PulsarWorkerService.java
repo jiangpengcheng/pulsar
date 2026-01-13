@@ -27,10 +27,12 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import javax.ws.rs.core.Response;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -182,6 +184,18 @@ public class PulsarWorkerService implements WorkerService {
         FunctionsStatsGenerator.generate(
             this, out
         );
+    }
+
+    @Override
+    public Map<String, List<String>> listFunctionAndConnectors(String tenant, String namespace) {
+        return functionMetaDataManager.listFunctions(tenant, namespace).stream()
+                .collect(Collectors.groupingBy(
+                        f -> f.getFunctionDetails().getComponentType().name(),
+                        Collectors.mapping(
+                                f -> f.getFunctionDetails().getName(),
+                                Collectors.toList()
+                        )
+                ));
     }
 
     public void init(WorkerConfig workerConfig,

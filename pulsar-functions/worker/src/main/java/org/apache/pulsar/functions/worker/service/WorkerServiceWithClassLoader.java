@@ -19,6 +19,8 @@
 package org.apache.pulsar.functions.worker.service;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.Map;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -117,6 +119,11 @@ public class WorkerServiceWithClassLoader implements WorkerService {
     @Override
     public void generateFunctionsStats(SimpleTextOutputStream out) {
         service.generateFunctionsStats(out);
+    }
+
+    @Override
+    public Map<String, List<String>> listFunctionAndConnectors(String tenant, String namespace) {
+        return service.listFunctionAndConnectors(tenant, namespace);
     }
 
 }

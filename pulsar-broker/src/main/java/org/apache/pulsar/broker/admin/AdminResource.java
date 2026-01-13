@@ -88,6 +88,9 @@ import org.apache.pulsar.metadata.api.MetadataStoreException.BadVersionException
 @Slf4j
 public abstract class AdminResource extends PulsarWebResource {
 
+    protected final String functionComponent = "function";
+    protected final String sinkComponent = "sink";
+    protected final String sourceComponent = "source";
     protected NamespaceName namespaceName;
     protected TopicName topicName;
 

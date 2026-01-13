@@ -18,6 +18,8 @@
  */
 package org.apache.pulsar.functions.worker;
 
+import java.util.List;
+import java.util.Map;
 import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.authentication.AuthenticationService;
 import org.apache.pulsar.broker.authorization.AuthorizationService;
@@ -133,4 +135,15 @@ public interface WorkerService {
      */
     void generateFunctionsStats(SimpleTextOutputStream out);
 
+    /**
+     * List functions and connectors in the specified tenant/namespace.
+     *
+     * @param tenant tenant name
+     * @param namespace namespace name
+     *
+     * @return the map of functions/sinks/sources
+     */
+    default Map<String, List<String>> listFunctionAndConnectors(String tenant, String namespace) {
+        return null;
+    }
 }
