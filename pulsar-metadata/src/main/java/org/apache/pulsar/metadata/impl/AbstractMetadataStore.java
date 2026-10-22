@@ -59,6 +59,7 @@ import org.apache.bookkeeper.common.util.OrderedExecutor;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.common.stats.CacheMetricsCollector;
 import org.apache.pulsar.common.util.FutureUtil;
+import org.apache.pulsar.common.util.PulsarExecutors;
 import org.apache.pulsar.metadata.api.DummyMetadataNodeSizeStats;
 import org.apache.pulsar.metadata.api.GetResult;
 import org.apache.pulsar.metadata.api.MetadataCache;
@@ -86,6 +87,8 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
 
     private final CopyOnWriteArrayList<Consumer<Notification>> listeners = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<Consumer<SessionEvent>> sessionListeners = new CopyOnWriteArrayList<>();
+    // Unregisters this store from its own notifications, which it uses to invalidate its caches
+    private final Runnable cancelCacheInvalidationListener;
     protected final String metadataStoreName;
     private final OrderedExecutor serDesExecutor;
     @Getter
@@ -130,15 +133,15 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
                 : nodeSizeStats;
         final var namePrefix = StringUtils.isNotBlank(metadataStoreName) ? metadataStoreName
                 : getClass().getSimpleName();
-        this.eventExecutor = Executors.newSingleThreadExecutor(
-                new DefaultThreadFactory(namePrefix + "-event"));
+        this.eventExecutor = PulsarExecutors.newSingleThreadExecutor(
+                new DefaultThreadFactory(namePrefix + "-event"), false);
         this.schedulerExecutor = Executors.newSingleThreadScheduledExecutor(
                 new DefaultThreadFactory(namePrefix + "-scheduler"));
         this.serDesExecutor = OrderedExecutor.newBuilder()
                 .numThreads(numSerDesThreads)
                 .name(namePrefix + "-worker")
                 .build();
-        registerListener(this);
+        cancelCacheInvalidationListener = registerCancellableListener(this);
 
         long childrenCacheMaxSizeBytes = getChildrenCacheMaxSizeBytes();
 
@@ -235,14 +238,14 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
     @Override
     public CompletableFuture<Void> handleMetadataEvent(MetadataEvent event) {
         CompletableFuture<Void> result = new CompletableFuture<>();
-        get(event.getPath()).thenApply(res -> {
+        get(event.getPath()).thenAccept(res -> {
             Set<CreateOption> options = event.getOptions() != null ? event.getOptions()
                     : Collections.emptySet();
             if (res.isPresent()) {
                 GetResult existingValue = res.get();
                 if (shouldIgnoreEvent(event, existingValue)) {
                     result.complete(null);
-                    return result;
+                    return;
                 }
             }
             // else update the event
@@ -262,7 +265,11 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
                 }
                 return false;
             });
-            return result;
+        }).exceptionally(ex -> {
+            Throwable cause = FutureUtil.unwrapCompletionException(ex);
+            log.warn().attr("path", event.getPath()).exception(cause).log("Failed to handle metadata event");
+            result.completeExceptionally(cause);
+            return null;
         });
         return result;
     }
@@ -294,7 +301,7 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
         }
         // ignore event if metadata is ephemeral or
         // sequential
-        if (options.contains(CreateOption.Ephemeral) || event.getOptions().contains(CreateOption.Sequential)) {
+        if (options.contains(CreateOption.Ephemeral) || options.contains(CreateOption.Sequential)) {
             return true;
         }
         // ignore the event if event occurred before the
@@ -370,9 +377,9 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
         return storeGet(path, opts)
                 .whenComplete((v, t) -> {
                     if (t != null) {
-                        v.ifPresent(getResult -> nodeSizeStats.recordGetRes(path, getResult));
                         metadataStoreStats.recordGetOpsFailed(System.currentTimeMillis() - start);
                     } else {
+                        v.ifPresent(getResult -> nodeSizeStats.recordGetRes(path, getResult));
                         metadataStoreStats.recordGetOpsSucceeded(System.currentTimeMillis() - start);
                     }
                 });
@@ -411,11 +418,26 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
     }
 
     @Override
-    public void registerListener(Consumer<Notification> listener) {
+    public Runnable registerCancellableListener(Consumer<Notification> listener) {
         // If the metadata store is closed, do nothing here.
-        if (!isClosed()) {
-            listeners.add(listener);
+        if (isClosed()) {
+            return () -> { };
         }
+        return addCancellable(listeners, listener);
+    }
+
+    /**
+     * Add a listener and return a callback that removes one registration of it. The callback removes it once even if
+     * it's run more than once, so that it doesn't also remove another registration of the same listener instance.
+     */
+    private static <T> Runnable addCancellable(CopyOnWriteArrayList<T> listenerList, T listener) {
+        listenerList.add(listener);
+        AtomicBoolean cancelled = new AtomicBoolean();
+        return () -> {
+            if (cancelled.compareAndSet(false, true)) {
+                listenerList.remove(listener);
+            }
+        };
     }
 
     protected CompletableFuture<Void> receivedNotification(Notification notification) {
@@ -468,7 +490,7 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
 
     @Override
     public final CompletableFuture<Void> delete(String path, Optional<Long> expectedVersion, Set<Option> opts) {
-        log.info().attr("path", path).attr("expectedVersion", expectedVersion).log("Deleting path");
+        log.debug().attr("path", path).attr("expectedVersion", expectedVersion).log("Deleting path");
         if (isClosed()) {
             return alreadyClosedFailedFuture();
         }
@@ -513,7 +535,7 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
             }
 
             metadataCaches.forEach(c -> c.invalidate(path));
-            log.info().attr("path", path).attr("expectedVersion", expectedVersion).log("Deleted path");
+            log.debug().attr("path", path).attr("expectedVersion", expectedVersion).log("Deleted path");
         });
     }
 
@@ -543,13 +565,28 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
                                                         Set<Option> opts);
 
     @Override
-    public CompletableFuture<List<GetResult>> findByIndex(
-            String scanPathPrefix, String indexName, String secondaryKey,
-            Predicate<GetResult> fallbackFilter, Set<Option> opts) {
+    public CompletableFuture<Void> scanByIndex(
+            String scanPathPrefix, String indexName,
+            String fromKeyInclusive, String toKeyInclusive,
+            Predicate<GetResult> fallbackFilter,
+            ScanConsumer consumer, Set<Option> opts) {
         if (isClosed()) {
-            return alreadyClosedFailedFuture();
+            CompletableFuture<Void> failed = alreadyClosedFailedFuture();
+            failed.whenComplete((__, ex) -> {
+                if (ex != null) {
+                    consumer.onError(ex);
+                }
+            });
+            return failed;
         }
-        return storeFindByIndex(scanPathPrefix, indexName, secondaryKey, fallbackFilter, opts);
+        if (scanPathPrefix == null || indexName == null || consumer == null) {
+            MetadataStoreException ex = new MetadataStoreException(
+                    "scanPathPrefix, indexName, and consumer must be non-null");
+            consumer.onError(ex);
+            return FutureUtil.failedFuture(ex);
+        }
+        return storeScanByIndex(scanPathPrefix, indexName, fromKeyInclusive, toKeyInclusive,
+                fallbackFilter, consumer, opts);
     }
 
     @Override
@@ -582,6 +619,10 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
         getChildrenFromStore(parentPath, opts).thenCompose(children -> {
             CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
             for (String child : children) {
+                if (isSequenceCounterChild(child)) {
+                    // Sidecar bookkeeping for SequenceKeysDeltas — not a user record.
+                    continue;
+                }
                 String childPath = parentPath.equals("/") ? "/" + child : parentPath + "/" + child;
                 chain = chain.thenCompose(__ -> storeGet(childPath, opts))
                         .thenAccept(opt -> opt.ifPresent(consumer::onNext));
@@ -601,23 +642,47 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
         return result;
     }
 
-    protected CompletableFuture<List<GetResult>> storeFindByIndex(
-            String scanPathPrefix, String indexName, String secondaryKey,
-            Predicate<GetResult> fallbackFilter, Set<Option> opts) {
-        // Default fallback: full scan under scanPathPrefix, applying fallbackFilter to each result.
-        return getChildrenFromStore(scanPathPrefix, opts)
-                .thenCompose(children -> {
-                    List<CompletableFuture<Optional<GetResult>>> futures = children.stream()
-                            .map(child -> storeGet(scanPathPrefix + "/" + child, opts))
-                            .toList();
-                    return FutureUtil.waitForAll(futures)
-                            .thenApply(__ -> futures.stream()
-                                    .map(CompletableFuture::join)
-                                    .filter(Optional::isPresent)
-                                    .map(Optional::get)
-                                    .filter(fallbackFilter)
-                                    .toList());
-                });
+    /**
+     * Backend hook for {@link #scanByIndex}. Default fallback: list children under
+     * {@code scanPathPrefix}, fetch each, and stream those passing {@code fallbackFilter} to
+     * {@code consumer}. Backends with a native indexed range-scan primitive (Oxia) override this
+     * to issue one store-side scan against the index.
+     *
+     * <p>The default impl ignores {@code indexName}, {@code fromKeyInclusive}, and
+     * {@code toKeyInclusive} — the caller's {@code fallbackFilter} is the only criterion.
+     * Callers that want range bounds enforced on non-native backends should encode the bounds in
+     * {@code fallbackFilter}.
+     */
+    protected CompletableFuture<Void> storeScanByIndex(
+            String scanPathPrefix, String indexName,
+            String fromKeyInclusive, String toKeyInclusive,
+            Predicate<GetResult> fallbackFilter,
+            ScanConsumer consumer, Set<Option> opts) {
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        getChildrenFromStore(scanPathPrefix, opts).thenCompose(children -> {
+            CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
+            for (String child : children) {
+                if (isSequenceCounterChild(child)) {
+                    // Sidecar bookkeeping for SequenceKeysDeltas — not a user record.
+                    continue;
+                }
+                String childPath = scanPathPrefix.equals("/") ? "/" + child : scanPathPrefix + "/" + child;
+                chain = chain.thenCompose(__ -> storeGet(childPath, opts))
+                        .thenAccept(opt -> opt.filter(fallbackFilter).ifPresent(consumer::onNext));
+            }
+            return chain;
+        }).whenComplete((v, ex) -> {
+            if (ex != null) {
+                Throwable cause = ex instanceof CompletionException && ex.getCause() != null
+                        ? ex.getCause() : ex;
+                consumer.onError(cause);
+                result.completeExceptionally(cause);
+            } else {
+                consumer.onCompleted();
+                result.complete(null);
+            }
+        });
+        return result;
     }
 
     @Override
@@ -724,8 +789,27 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
 
     /** Counter-document path for a sequence prefix. Sibling of the prefix at the parent level. */
     static String sequenceCounterPath(String prefix) {
-        return prefix + "__seq_counter__";
+        return prefix + SEQUENCE_COUNTER_SUFFIX;
     }
+
+    /**
+     * @return {@code true} when {@code childName} is a synthesized sequence-counter sidecar — i.e.
+     *     bookkeeping written by {@link #atomicIncrementSequenceCounter}, not a user record. Scan
+     *     primitives use this to filter counters out of their output on non-native backends.
+     *
+     * <p>The match is a literal-suffix check. A user record whose final path segment happens to
+     *     end with {@value #SEQUENCE_COUNTER_SUFFIX} would also be filtered. We accept that as
+     *     acceptable: callers don't get to pick paths ending in the {@code __seq_counter__} marker
+     *     accidentally (the suffix is 16 characters of internal-only marker), and a strict check
+     *     would require either tracking active prefixes or reserving a delimiter that the path
+     *     backends forbid. The cost of a false positive is silently dropping that record from
+     *     {@code scanChildren}/{@code scanByIndex}; no data loss.
+     */
+    static boolean isSequenceCounterChild(String childName) {
+        return childName != null && childName.endsWith(SEQUENCE_COUNTER_SUFFIX);
+    }
+
+    private static final String SEQUENCE_COUNTER_SUFFIX = "__seq_counter__";
 
     /** Format a synthesized sequence key matching Oxia's native format: {@code prefix-{seq:%020d}-...}. */
     static String formatSequenceKey(String prefix, long[] seqs) {
@@ -871,8 +955,8 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
     }
 
     @Override
-    public void registerSessionListener(Consumer<SessionEvent> listener) {
-        sessionListeners.add(listener);
+    public Runnable registerCancellableSessionListener(Consumer<SessionEvent> listener) {
+        return addCancellable(sessionListeners, listener);
     }
 
     protected void receivedSessionEvent(SessionEvent event) {
@@ -913,10 +997,21 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
 
     @Override
     public void close() throws Exception {
+        cancelCacheInvalidationListener.run();
         MoreExecutors.shutdownAndAwaitTermination(serDesExecutor, 10, TimeUnit.SECONDS);
         MoreExecutors.shutdownAndAwaitTermination(schedulerExecutor, 10, TimeUnit.SECONDS);
         MoreExecutors.shutdownAndAwaitTermination(eventExecutor, 10, TimeUnit.SECONDS);
         this.metadataStoreStats.close();
+    }
+
+    @VisibleForTesting
+    public int getListenerCount() {
+        return listeners.size();
+    }
+
+    @VisibleForTesting
+    public int getSessionListenerCount() {
+        return sessionListeners.size();
     }
 
     @VisibleForTesting

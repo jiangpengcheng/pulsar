@@ -19,12 +19,14 @@
 package org.apache.pulsar.metadata.api;
 
 /**
- * Streaming consumer for {@link MetadataStore#scanChildren} results.
+ * Streaming consumer for {@link MetadataStore#scanChildren} and {@link MetadataStore#scanByIndex}
+ * results.
  *
- * <p>The store invokes {@link #onNext} for each child record (in key order), and then either
- * {@link #onCompleted} (success) or {@link #onError} (failure) exactly once. Implementations must
- * be safe to invoke from a metadata-store internal thread; back-pressure is the consumer's
- * responsibility (long blocking work in {@code onNext} can stall the scan).
+ * <p>The store invokes {@link #onNext} for each record, and then either {@link #onCompleted}
+ * (success) or {@link #onError} (failure) exactly once. The records come in no particular order: a
+ * store with several shards, like Oxia, passes on the records of each shard as they arrive.
+ * Implementations must be safe to invoke from a metadata-store internal thread; back-pressure is the
+ * consumer's responsibility (long blocking work in {@code onNext} can stall the scan).
  */
 public interface ScanConsumer {
 
@@ -47,4 +49,34 @@ public interface ScanConsumer {
      * callbacks are made.
      */
     void onCompleted();
+
+    /**
+     * A {@link ScanConsumer} that accumulates emitted records into the given list. Useful when a
+     * caller wants the convenience of a {@code CompletableFuture<List<GetResult>>} on top of the
+     * streaming API — failure / completion are signaled by the future returned from
+     * {@code scanByIndex} / {@code scanChildren}.
+     *
+     * <pre>{@code
+     * List<GetResult> out = new ArrayList<>();
+     * store.scanByIndex(prefix, indexName, key, key, filter, ScanConsumer.collectInto(out)).join();
+     * }</pre>
+     */
+    static ScanConsumer collectInto(java.util.List<GetResult> out) {
+        return new ScanConsumer() {
+            @Override
+            public void onNext(GetResult result) {
+                out.add(result);
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                // Caller observes failure via the scan's CompletableFuture.
+            }
+
+            @Override
+            public void onCompleted() {
+                // No-op.
+            }
+        };
+    }
 }

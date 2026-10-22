@@ -30,6 +30,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import org.apache.pulsar.metadata.api.MetadataStoreException.BadVersionException;
 import org.apache.pulsar.metadata.api.MetadataStoreException.NotFoundException;
+import org.apache.pulsar.metadata.impl.ListenerRegistrationWarnings;
 
 /**
  * Metadata store client interface.
@@ -245,8 +246,40 @@ public interface MetadataStore extends AutoCloseable {
      *
      * @param listener
      *            a consumer of notifications
+     * @deprecated use {@link #registerCancellableListener(Consumer)}, and run the returned callback when the
+     *             listener is no longer needed. Implementations implement
+     *             {@link #registerCancellableListener(Consumer)} instead of this method.
      */
-    void registerListener(Consumer<Notification> listener);
+    @Deprecated
+    default void registerListener(Consumer<Notification> listener) {
+        ListenerRegistrationWarnings.deprecatedMethodCalled("MetadataStore.registerListener",
+                "registerCancellableListener");
+        registerCancellableListener(listener);
+    }
+
+    /**
+     * Register a listener that will be called on changes in the underlying store.
+     *
+     * <p>The caller must run the returned callback when the listener is no longer needed, at the latest when the
+     * component that registered it is closed, so that the store stops notifying it and doesn't keep it reachable.
+     * Running the callback more than once has no further effect.
+     *
+     * <p>Implementations must override this method. The default implementation is only there for the
+     * implementations that were written for the deprecated {@link #registerListener(Consumer)}: it registers the
+     * listener with that method and returns a callback that can't unregister it. Since the default implementations
+     * of the two methods call each other, an implementation that overrides neither fails with a
+     * {@link StackOverflowError} when a listener is registered.
+     *
+     * @param listener
+     *            a consumer of notifications
+     * @return a callback that unregisters the listener
+     */
+    default Runnable registerCancellableListener(Consumer<Notification> listener) {
+        ListenerRegistrationWarnings.cancellableMethodNotImplemented(getClass(),
+                "MetadataStore.registerCancellableListener");
+        registerListener(listener);
+        return () -> { };
+    }
 
     /**
      * Create a metadata cache specialized for a specific class.
@@ -338,33 +371,60 @@ public interface MetadataStore extends AutoCloseable {
     }
 
     /**
-     * Find all records matching a secondary index.
+     * Stream records matching a secondary-index value or range.
      *
-     * <p>On stores that support secondary indexes natively (e.g. Oxia), this uses the index
-     * efficiently. On stores that don't (e.g. ZooKeeper), it falls back to listing all children
-     * under {@code scanPathPrefix}, fetching each record, and applying {@code fallbackFilter}.
+     * <p>One method serves both point lookup and range queries:
+     * <ul>
+     *   <li>Point lookup: {@code fromKey == toKey == key}.</li>
+     *   <li>Range: pass {@code null} on either side for an unbounded bound, or specific values for
+     *       a closed range. Both bounds are <b>inclusive</b>.</li>
+     * </ul>
      *
-     * @param scanPathPrefix path prefix for fallback scan (used by stores without native index support)
-     * @param indexName      the secondary index name
-     * @param secondaryKey   the secondary key to look up
-     * @param fallbackFilter predicate to filter results during fallback scan; ignored by native implementations
-     * @param opts           the set of {@link Option options} for this operation
-     * @return list of matching {@link GetResult} entries
+     * <p>On stores that support secondary indexes natively (e.g. Oxia), this is a single store-side
+     * range scan over the index: the index range decides which records are returned, and
+     * {@code fallbackFilter} is not applied, so callers that need every returned record to pass it
+     * should re-check it on the results. On stores that don't (e.g. ZooKeeper), it falls back to
+     * listing all children under {@code scanPathPrefix}, fetching each record, and returning those
+     * that pass {@code fallbackFilter}. The fallback ignores {@code indexName}, {@code fromKeyInclusive}
+     * and {@code toKeyInclusive}, so {@code fallbackFilter} is its only criterion: it must itself reject
+     * the records whose {@code indexName} key is missing or outside the bounds.
+     *
+     * <p>Results are streamed to {@code consumer} as they become available — {@link ScanConsumer#onNext}
+     * once per match, in no particular order, then exactly one of {@link ScanConsumer#onCompleted} or
+     * {@link ScanConsumer#onError}. The returned future completes when the scan terminates and
+     * mirrors the terminal callback.
+     *
+     * @param scanPathPrefix    path prefix scoping the scan (and used by the fallback list)
+     * @param indexName         the secondary-index name
+     * @param fromKeyInclusive  lower bound on the secondary-key value, or {@code null} for unbounded
+     * @param toKeyInclusive    upper bound on the secondary-key value, or {@code null} for unbounded
+     * @param fallbackFilter    the only criterion of the fallback scan, so it must match the index key and
+     *                          enforce the bounds itself; not applied by native implementations
+     * @param consumer          callback receiving records, completion, or an error
+     * @param opts              the set of {@link Option options} for this operation
+     * @return a future that completes when the scan terminates
      */
-    default CompletableFuture<List<GetResult>> findByIndex(
-            String scanPathPrefix, String indexName, String secondaryKey,
-            Predicate<GetResult> fallbackFilter, Set<Option> opts) {
-        return CompletableFuture.failedFuture(
-                new MetadataStoreException("Secondary index queries not supported by this store"));
+    default CompletableFuture<Void> scanByIndex(
+            String scanPathPrefix, String indexName,
+            String fromKeyInclusive, String toKeyInclusive,
+            Predicate<GetResult> fallbackFilter,
+            ScanConsumer consumer, Set<Option> opts) {
+        MetadataStoreException ex =
+                new MetadataStoreException("Secondary index queries not supported by this store");
+        consumer.onError(ex);
+        return CompletableFuture.failedFuture(ex);
     }
 
     /**
-     * Like {@link #findByIndex(String, String, String, Predicate, Set)} with no options.
+     * Like {@link #scanByIndex(String, String, String, String, Predicate, ScanConsumer, Set)} with no options.
      */
-    default CompletableFuture<List<GetResult>> findByIndex(
-            String scanPathPrefix, String indexName, String secondaryKey,
-            Predicate<GetResult> fallbackFilter) {
-        return findByIndex(scanPathPrefix, indexName, secondaryKey, fallbackFilter, Set.of());
+    default CompletableFuture<Void> scanByIndex(
+            String scanPathPrefix, String indexName,
+            String fromKeyInclusive, String toKeyInclusive,
+            Predicate<GetResult> fallbackFilter,
+            ScanConsumer consumer) {
+        return scanByIndex(scanPathPrefix, indexName, fromKeyInclusive, toKeyInclusive,
+                fallbackFilter, consumer, Set.of());
     }
 
     /**
